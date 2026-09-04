@@ -1,0 +1,5 @@
+{
+  "why": "These kernels decide the PIXELS of a texture that has already shipped in a dataset. Reimplementing them would produce a different atlas for the same object, so they are carried verbatim from the campaign that produced the shipped textures and are excluded from linting (ADR 0002).",
+  "policy": "Edits are limited to import paths and to replacing build-host constants with configuration lookups. Any change that could move a pixel requires a RECIPE_VERSION bump, which invalidates every product on disk.",
+  "files": {}
+}

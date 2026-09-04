@@ -1,0 +1,52 @@
+# A TopoTexGen run. Copy, edit the paths, keep it next to the run's output.
+#
+# Nothing here has a default that points somewhere plausible: a missing path
+# fails at startup with its own name, because the alternative is a stack trace
+# from inside a worker twenty minutes later.
+
+paths:
+  # the frozen dataset: <root>/<uid>/{mesh,queries}.safetensors, views/, meta.json
+  sample_roots:
+    - /path/to/dataset/samples
+  # per-object camera records, when they are not in the sample's own meta
+  camera_root: /path/to/dataset/cameras
+  # everything this run writes: captions, references, atlases, staging, ledgers
+  work: /path/to/runs/texgen-2026-09
+  # checkout of the texture generator whose pipeline is imported by the
+  # generate stage
+  generator_root: /path/to/UniTEX
+
+interpreters:
+  # One per model stage. They cannot share a process: the captioner, the
+  # reference model and the texture generator pull incompatible pins.
+  caption: /path/to/envs/vlm/bin/python
+  reference: /path/to/envs/diffusion/bin/python
+  generate: /path/to/envs/generator/bin/python
+  # the deterministic stage runs anywhere; leave unset to use this interpreter
+  assetize: null
+
+recipe:
+  # Everything that determines a texture's pixels. Changing any of it should
+  # bump RECIPE_VERSION: products on disk are keyed by it and will be redone.
+  caption_model: Qwen/Qwen2.5-VL-7B-Instruct
+  caption_max_words: 30
+  reference_model: black-forest-labs/FLUX.1-dev
+  reference_steps: 36
+  reference_batch: 4
+  reference_suffix: ", single object centered on plain light grey background, full view, sharp focus, 8k"
+  atlas_resolution: 2048
+  texture_resolution: 256
+  margin_px: 4
+  uv_convention: flipud-v1
+
+runtime:
+  # The defaults encode measurements, not taste — see docs/operations/throughput.md
+  gpus: 8
+  workers_per_gpu: 2        # two fit when the reference model is not resident
+  cpu_threads: 16           # uncapped, 8 workers oversubscribed a 180-core host
+  overlap_post_stage: true  # ~18 s/object of otherwise idle GPU
+  require_gpu_matting: true # the silent CPU fallback cost 43 s/object
+  gpu_memory_gb: 36
+
+notes:
+  purpose: regenerate textures for objects whose originals are unusable

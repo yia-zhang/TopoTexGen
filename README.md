@@ -52,6 +52,14 @@ orchestrator.
 
 ## Install and run
 
+**Before anything else: the three models are not in this repository, two of
+them are gated, and one restricts what you may do with the textures it
+produces.** Roughly 48 GiB of weights plus a generator checkout — see
+[models and weights](docs/operations/models.md) for the exact sizes, the
+`hf download` lines and the environment matrix, and
+[model terms](docs/specifications/model-terms.md) for what the licences mean
+downstream. The deterministic half of the pipeline needs none of them.
+
 ```bash
 pip install -e ".[dev]"                  # orchestration, gates, assetize, tests
 pip install -e ".[reference,generate]"   # only in the model environments
@@ -150,6 +158,7 @@ a build host wired into all of them. The changes that matter:
 | [Pipeline specification](docs/specifications/pipeline-spec.md) | what each stage consumes and produces, and the run directory's layout |
 | [Gate specification](docs/specifications/gate-spec.md) | the measurements each gate needs and how the verdict is decided |
 | [Model terms](docs/specifications/model-terms.md) | what the licences of the models mean for the textures they produce |
+| [Models and weights](docs/operations/models.md) | which models, what they cost to download, which are gated, and the environment matrix |
 | [Environments](docs/operations/environments.md) | the worker contract, and why the stages cannot share one interpreter |
 | [Throughput](docs/operations/throughput.md) | the measurements behind the runtime defaults |
 | [Decisions](docs/architecture/adr/) | why the boundaries are where they are |

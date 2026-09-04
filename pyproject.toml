@@ -1,0 +1,63 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "topotexgen"
+version = "0.1.0"
+description = "Texture regeneration for 3D assets: caption, reference, atlas generation, and eight quality gates that decide what ships"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "TopoTexGen maintainers"}]
+keywords = ["3d", "texture", "diffusion", "uv-mapping", "dataset"]
+classifiers = [
+  "Programming Language :: Python :: 3.10",
+  "License :: OSI Approved :: MIT License",
+  "Topic :: Multimedia :: Graphics :: 3D Modeling",
+]
+dependencies = [
+  "numpy>=1.24",
+  "pillow>=10.0",
+  "scipy>=1.10",
+  "safetensors>=0.4",
+  "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+# the model stages: these live in their own environments on a real host, and
+# the package refuses to guess where. See docs/operations/environments.md.
+caption = ["transformers>=4.44", "torch>=2.1", "accelerate>=0.30"]
+reference = ["diffusers>=0.30", "torch>=2.1", "transformers>=4.44"]
+generate = ["torch>=2.1", "trimesh>=4.0", "opencv-python-headless>=4.9", "rembg>=2.0"]
+report = ["pandas>=2.0", "pyarrow>=14.0"]
+dev = ["pytest>=8.0", "ruff>=0.6"]
+
+[project.scripts]
+topotexgen = "topotexgen.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/yia-zhang/TopoTexGen"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests"]
+# the numerical kernels are carried VERBATIM from the campaign that produced
+# the shipped textures (ADR 0002): linting them would demand edits to bytes we
+# must be able to reproduce.
+extend-exclude = ["src/topotexgen/_frozen"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "C4", "SIM", "RUF"]
+ignore = ["E501", "RUF001", "RUF002", "RUF003"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+  "gpu: needs a GPU and the model environments",
+  "dataset: needs a frozen dataset tree",
+]

@@ -1,0 +1,23 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: lint
+        run: ruff check src tests
+      - name: tests
+        # the model stages need GPUs and their own environments; everything
+        # else — orchestration, the queue, assetize, all eight gates — runs here
+        run: pytest -q -m "not gpu and not dataset"

@@ -115,6 +115,19 @@ def prepare_mesh(work: Path, mesh_path: str | Path, *, resolution: int = 256,
     d.mkdir(parents=True, exist_ok=True)
     write_generator_obj(mesh, d / f"{uid}.obj")
 
+    # views for the captioner. The loop has to be able to ask "what is this
+    # object" before it has anything to paint, and on a fresh mesh there are no
+    # renders to ask about -- so the untextured shape is rendered here. The
+    # caption prompt tells the model the colour is a placeholder and to read the
+    # shape, which is exactly what these are.
+    from PIL import Image
+
+    from topotexgen.geometry.view import render_shape_views
+    for i, (rgb, alpha) in enumerate(render_shape_views(mesh, res=512)):
+        Image.fromarray(np.dstack([rgb, (alpha * 255).astype(np.uint8)]), "RGBA") \
+            .save(d / f"{uid}.view_{i:03d}.png")
+
+
     from safetensors.numpy import save_file
     save_file({"face_id": am.face_id,
                "barycentric": np.moveaxis(am.barycentric, -1, 0).astype(np.float16),

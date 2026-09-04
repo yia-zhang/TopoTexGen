@@ -50,6 +50,10 @@ on, including the rules that were tried and **refuted**. A re-calibration is a
 change to that file with its own evidence line, not an edit buried in an
 orchestrator.
 
+> **Picking this up on another machine?** [HANDOFF.md](HANDOFF.md) says what is
+> proven and how, what is left, and the traps that were measured rather than
+> guessed.
+
 ## Install and run
 
 **Before anything else: the three models are not in this repository, two of

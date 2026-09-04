@@ -125,3 +125,20 @@ def test_the_provenance_file_records_what_happened(tmp_path):
     assert rec["uv_source"] == "supplied"
     assert rec["source"].endswith("m.obj")
     assert rec["resolution"] == 64
+
+
+def test_views_for_the_captioner_are_rendered(tmp_path):
+    """A fresh mesh has no renders, and the loop has to be able to ask what the
+    object is before it has anything to paint. So the untextured shape is
+    rendered here -- which is what the caption prompt's "the colour is a
+    placeholder, read the shape" instruction is written for."""
+    from PIL import Image
+    work = tmp_path / "work"
+    p = prepare_mesh(work, _obj(tmp_path), resolution=64)
+    views = sorted((work / "mesh").glob(f"{p.uid}.view_*.png"))
+    assert len(views) == 2, [v.name for v in views]
+    a = np.asarray(Image.open(views[0]).convert("RGBA"))
+    assert a.shape == (512, 512, 4)
+    fg = a[..., 3] > 127
+    assert fg.any(), "the shape view is empty"
+    assert a[..., :3][fg].max() > 50, "the shape view is black"

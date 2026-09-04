@@ -1,0 +1,104 @@
+# Quality gates: thresholds, and the evidence each one was calibrated on.
+#
+# These numbers are data, not code, because they were derived by looking at
+# objects — and a future re-calibration should be a change here with its own
+# evidence line, not an edit buried in an orchestrator. Every threshold below
+# records what it was measured against and, where a stricter rule was tried
+# and refuted, why it was loosened.
+version: topotexgen.gates/1
+
+g1_dark:
+  purpose: >
+    A generated atlas that is mostly black is usually a hole — the generator
+    failed and painted nothing. But a dark TEXTURE is legitimate supervision
+    (tyres, gun metal, black armour), so darkness alone cannot fail an object.
+  dark_luma_max: 12          # a texel counts as dark below this (0-255)
+  fail_dark_frac: 0.40       # whole-object black: no information gained
+  smear_dark_frac: 0.15      # combined with the blob rule below
+  smear_max_blob: 0.50       # one connected blob holding this share of the dark area
+  witness:
+    # The reference image the texture was generated from is the witness: if the
+    # SOURCE is dark, dark output is faithful, not a hole.
+    ref_dark_luma_max: 60
+    ref_dark_frac_legit: 0.15
+    ref_foreground_min_px: 500
+    ref_background_delta: 40   # distance from the corner colour that counts as foreground
+  calibration: >
+    Calibrated on 7 hand-checked legitimately dark objects (black hair, wheels,
+    armour, per their captions; dark scattered in small pieces) against the
+    true failures, which were whole-object dark at 0.5-0.8 ("black replaced by
+    black") or one large hole smear. The witness thresholds come from the 19
+    G1 failures of the first 1,200 objects: every reference at or above 0.19
+    dark was a legitimate dark material, while the three real holes had
+    references at 0.02, 0.05 and 0.14.
+  human_bless: >
+    A per-object override exists for legitimate black the photographic witness
+    undercounts (a boot sole, the back of a monitor), granted only after
+    locating the black region in 3D. A blanket "the generator's own views are
+    also black" witness was tried and REFUTED: atlas black implies view black
+    by construction, so it would have disabled the gate entirely.
+
+g3_albedo_ratio:
+  purpose: >
+    Catches content painted where no camera can see it: if the rendered
+    luminance is far below the visible albedo's, the texture is carrying
+    detail on hidden faces.
+  fail_below: 0.35
+  log_above: 0.80
+  calibration: >
+    Only the low side gates. The high side was reviewed over all 24 cases and
+    left as a logged metric: dark, high-contrast textures render relatively
+    bright under the ambient floor, the atlas-versus-views gate confirms the
+    mapping, and nothing is wrong with the data.
+
+g4_frame:
+  purpose: Views must frame the object the way the protocol says.
+  min_iou: 0.90
+  regression_tolerance: 0.005   # must not be worse than the object's ORIGINAL views
+  calibration: >
+    Silhouette IoU is a pure function of geometry and camera, so a low value
+    inherited from the object (a thin plate seen edge-on) is not a texture
+    defect. All 17 historical failures scored the same as the original views;
+    the gate therefore fails only when the NEW views are worse than the
+    object's own originals by more than the tolerance.
+
+g5_golden:
+  purpose: The frozen-protocol re-render must succeed on enough views to be usable.
+  min_valid_views: 3
+
+g6_cross_family:
+  purpose: >
+    The same texel must carry the same colour in all three UV families —
+    otherwise the families disagree about the object.
+  max_bad_fraction: 0.001
+
+g7_margin_ring:
+  purpose: >
+    The dilated ring around each UV island must match the production bake's
+    background convention, or seams appear where the atlas is sampled.
+  max_ring_difference: 2.0     # mean absolute difference, 0-255
+
+g8_atlas_views:
+  purpose: >
+    The strongest structural check: re-render the atlas and compare with the
+    generator's OWN views. It catches a mis-mapped or flipped atlas, which no
+    colour statistic can see.
+  min_psnr: 8.0                # below this the atlas is garbage
+  flip_margin: 3.0             # flipped variant fitting better by this much = wrong orientation
+  ambiguity_margin: 1.0        # within this, orientation is unobservable...
+  ambiguity_min_psnr: 15.0     # ...and only then does a poor absolute fit fail
+  missing_is_failure: true     # no record must never pass silently
+  calibration: >
+    Absolute fidelity is logged rather than gated: high-frequency textures and
+    the generator's own colour drift score 10-15 dB while being correctly
+    mapped. Near-uniform textures make orientation unobservable (both variants
+    score high), so they are exempt from the ambiguity rule.
+
+g2_magenta:
+  purpose: >
+    Retained as a LOGGED metric only. In this pipeline the ground truth and the
+    condition views come from the SAME generated texture, so a magenta patch is
+    self-consistent supervision — an aesthetic drift from the reference, not a
+    data defect. The magenta signal is only meaningful where it indicates a
+    condition/ground-truth mismatch, which cannot arise here.
+  gated: false

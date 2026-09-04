@@ -121,3 +121,85 @@ def test_the_unwrapped_layout_feeds_the_rasteriser(tmp_path):
     ids = set(np.unique(am.face_id[am.valid_mask.astype(bool)]).tolist())
     assert ids == {0, 1}
     assert am.occupancy > 0.9          # a full-square layout fills the atlas
+
+
+# --------------------------------------------------------------------- glTF
+trimesh = pytest.importorskip("trimesh", reason="glTF intake is an extra")
+pygltflib = pytest.importorskip("pygltflib", reason="reading raw accessors")
+
+
+def _glb(tmp_path, uv, name="q.glb"):
+    m = trimesh.Trimesh(vertices=V.copy(), faces=F.copy(), process=False)
+    m.visual = trimesh.visual.TextureVisuals(uv=np.asarray(uv), image=None)
+    p = tmp_path / name
+    m.export(str(p))
+    return p
+
+
+def _file_texcoords(path):
+    """The bytes in the file, read from the accessor — the only reference that
+    a flip bug cannot also corrupt."""
+    g = pygltflib.GLTF2().load(str(path))
+    prim = g.meshes[0].primitives[0]
+    acc = g.accessors[prim.attributes.TEXCOORD_0]
+    bv = g.bufferViews[acc.bufferView]
+    off = (bv.byteOffset or 0) + (acc.byteOffset or 0)
+    return np.frombuffer(g.binary_blob()[off:off + acc.count * 8],
+                         dtype=np.float32).reshape(-1, 2).astype(np.float64)
+
+
+def test_a_glb_is_read_with_the_files_own_v_not_trimeshs():
+    """The bug this test exists for, and why a round trip cannot find it.
+
+    trimesh flips v on import AND on export, so its in-memory UVs are 1-v of
+    the bytes in the file. glTF's convention is v top-down and so is this
+    package's, so the flip has to be undone on the way in. Before it was, every
+    glTF with an authored layout produced a vertically mirrored texture -- a
+    perfectly plausible image, with no error.
+
+    A round-trip test (write with trimesh, read with trimesh) passes with the
+    bug in place, because the two flips cancel. So the reference here is the
+    file's own TEXCOORD_0 accessor.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        from pathlib import Path
+        p = _glb(Path(d), [[0.1, 0.2], [0.9, 0.2], [0.9, 0.8], [0.1, 0.8]])
+        in_file = _file_texcoords(p)
+        got = load_mesh(p)
+        assert got.has_uv
+        assert np.allclose(got.uv_vertices, in_file, atol=1e-6), (
+            f"loaded {got.uv_vertices.tolist()} but the file holds "
+            f"{in_file.tolist()}")
+        # and explicitly NOT the mirrored reading
+        assert not np.allclose(got.uv_vertices[:, 1], 1.0 - in_file[:, 1], atol=1e-6)
+
+
+def test_a_gltf_layout_hidden_behind_a_missing_material_is_reported():
+    """trimesh only exposes UVs for a primitive that has a material, and a
+    texture-less mesh -- this loop's intended input -- may have none. The
+    layout is then invisible to the loader and a fresh unwrap replaces it, so
+    the caller has to be told rather than silently handed a new layout."""
+    import json
+    import tempfile
+    from pathlib import Path
+
+    from topotexgen.geometry.mesh import gltf_has_texcoord
+    from topotexgen.stages.prepare import prepare_mesh
+
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        p = _glb(d, [[0.1, 0.2], [0.9, 0.2], [0.9, 0.8], [0.1, 0.8]])
+        g = pygltflib.GLTF2().load(str(p))
+        g.meshes[0].primitives[0].material = None       # strip the material
+        g.materials = []
+        stripped = d / "nomat.glb"
+        g.save(str(stripped))
+
+        assert gltf_has_texcoord(stripped), "the file still declares TEXCOORD_0"
+        assert not load_mesh(stripped).has_uv, "trimesh should expose no layout"
+
+        rep = prepare_mesh(d / "work", stripped, resolution=32)
+        assert rep.uv_source == "xatlas"
+        assert any("no material" in n for n in rep.notes), rep.notes
+        assert json.loads((d / "work" / "mesh" / f"{rep.uid}.json").read_text())

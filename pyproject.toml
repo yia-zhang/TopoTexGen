@@ -30,8 +30,12 @@ dependencies = [
 caption = ["transformers>=4.44", "torch>=2.1", "accelerate>=0.30"]
 reference = ["diffusers>=0.30", "torch>=2.1", "transformers>=4.44"]
 generate = ["torch>=2.1", "trimesh>=4.0", "opencv-python-headless>=4.9", "rembg>=2.0"]
+# mesh intake: .obj needs nothing, glTF needs a parser. pygltflib is here for
+# reading TEXCOORD_0 straight from the accessor -- trimesh only exposes a
+# primitive's UVs when it has a material, and a texture-less mesh may not.
+mesh = ["trimesh>=4.0", "pygltflib>=1.16", "xatlas>=0.0.9"]
 report = ["pandas>=2.0", "pyarrow>=14.0"]
-dev = ["pytest>=8.0", "ruff>=0.6"]
+dev = ["pytest>=8.0", "ruff>=0.6", "trimesh>=4.0", "pygltflib>=1.16", "xatlas>=0.0.9"]
 
 [project.scripts]
 topotexgen = "topotexgen.cli:main"

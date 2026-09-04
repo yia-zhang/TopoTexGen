@@ -67,43 +67,35 @@ def normalize_to_box(vertices, extent: float = BOX_EXTENT) -> np.ndarray:
     return (v - (lo + hi) / 2.0) / (span / (2.0 * extent))
 
 
-def render_ortho(mesh: Mesh, texture, c2w, res: int = 512,
-                 faces_keep=None) -> tuple[np.ndarray, np.ndarray]:
-    """One orthographic, emission-shaded view. Returns (rgb uint8, alpha bool).
+def _rasterize(mesh: Mesh, c2w, res: int, faces_keep=None):
+    """Project, rasterise and z-buffer. Returns the surviving fragments.
 
-    Vertices are taken as already normalised (see ``normalize_to_box``).
-    ``texture`` is sampled with the mesh's own UVs by nearest texel -- the
-    comparison is per-pixel against a reference of the same resolution, so
-    filtering would only blur both sides of it.
+    Shared by every shading model here, so the geometry is resolved exactly
+    once and two renders of the same object can never disagree about which
+    surface a pixel shows.
     """
-    if not mesh.has_uv:
-        raise ValueError("rendering needs a UV layout to sample the texture with")
-    tex = np.asarray(texture)[..., :3]
-    th, tw = tex.shape[:2]
     H = W = int(res)
-
     V = np.asarray(mesh.vertices, np.float64)
     F = np.asarray(mesh.faces, np.int64)
-    FT = np.asarray(mesh.uv_faces, np.int64)
+    FT = (None if mesh.uv_faces is None else np.asarray(mesh.uv_faces, np.int64))
     if faces_keep is not None:
         keep = np.asarray(faces_keep)
-        F, FT = F[keep], FT[keep]
+        F = F[keep]
+        FT = None if FT is None else FT[keep]
 
     # world -> camera. c2w is OpenGL: the camera looks along -Z_cam, +Y_cam up.
     w2c = np.linalg.inv(np.asarray(c2w, np.float64))
     cam = V @ w2c[:3, :3].T + w2c[:3, 3]
-    # orthographic: x/y map straight to the visible square; depth is -Z_cam,
-    # which grows away from the camera, so the NEAREST fragment is the SMALLEST
     px = (cam[:, 0] / ORTHO_HALF * 0.5 + 0.5) * W
     py = (1.0 - (cam[:, 1] / ORTHO_HALF * 0.5 + 0.5)) * H     # image rows go down
-    depth = -cam[:, 2]
+    depth = -cam[:, 2]                     # grows away from the camera
 
-    tri = np.stack([px, py], axis=1)[F]                        # [F, 3, 2]
+    tri = np.stack([px, py], axis=1)[F]
     e01, e02 = tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0]
     area2 = e01[:, 0] * e02[:, 1] - e01[:, 1] * e02[:, 0]
     live = area2 != 0
-    # a back-facing triangle is not culled: an open shell shows its inside, and
-    # the generator's own views show it too
+    # back faces are NOT culled: an open shell shows its inside, and the
+    # generator's own views show it too
     tri_n = np.where((area2 < 0)[:, None, None], tri[:, [0, 2, 1], :], tri)
     perm = np.where((area2 < 0)[:, None], np.array([0, 2, 1]), np.array([0, 1, 2]))
 
@@ -116,11 +108,8 @@ def render_ortho(mesh: Mesh, texture, c2w, res: int = 512,
     bh = np.clip(y1 - y0 + 1, 0, None) * (mx[:, 1] >= 0) * (mn[:, 1] <= H)
     ncand = (bw * bh) * live
     fidx = np.nonzero(ncand > 0)[0]
-
-    rgb = np.zeros((H, W, 3), np.uint8)
-    alpha = np.zeros((H, W), bool)
     if fidx.size == 0:
-        return rgb, alpha
+        return None
 
     counts = ncand[fidx]
     face_of = np.repeat(fidx, counts)
@@ -138,7 +127,7 @@ def render_ortho(mesh: Mesh, texture, c2w, res: int = 512,
                   edge(t[:, 0], t[:, 1])], axis=1)
     inside = (E >= 0).all(axis=1)
     if not inside.any():
-        return rgb, alpha
+        return None
 
     face_in = face_of[inside]
     ix = (cx[inside] - 0.5).astype(np.int64)
@@ -150,22 +139,92 @@ def render_ortho(mesh: Mesh, texture, c2w, res: int = 512,
 
     z = (depth[F[face_in]] * bary).sum(1)
     pix = iy * W + ix
-
-    # the z-buffer: within each pixel keep the nearest fragment. lexsort puts
-    # depth ascending inside each pixel, so the first row per pixel wins.
+    # the z-buffer: lexsort puts depth ascending inside each pixel, so the
+    # first row per pixel is the nearest fragment
     order = np.lexsort((z, pix))
-    keep_first = np.unique(pix[order], return_index=True)[1]
-    sel = order[keep_first]
+    sel = order[np.unique(pix[order], return_index=True)[1]]
+    return {"pix": pix[sel], "face": face_in[sel], "bary": bary[sel],
+            "F": F, "FT": FT, "w2c": w2c, "c2w": np.asarray(c2w, np.float64),
+            "shape": (H, W)}
 
-    uvc = np.asarray(mesh.uv_vertices, np.float64)[FT[face_in[sel]]]   # [K,3,2]
-    uv = (uvc * bary[sel][:, :, None]).sum(1)
+
+def render_ortho(mesh: Mesh, texture, c2w, res: int = 512,
+                 faces_keep=None) -> tuple[np.ndarray, np.ndarray]:
+    """One orthographic, emission-shaded view. Returns (rgb uint8, alpha bool).
+
+    Vertices are taken as already normalised (see ``normalize_to_box``).
+    ``texture`` is sampled with the mesh's own UVs by nearest texel -- the
+    comparison is per-pixel against a reference of the same resolution, so
+    filtering would only blur both sides of it.
+    """
+    if not mesh.has_uv:
+        raise ValueError("rendering needs a UV layout to sample the texture with")
+    H = W = int(res)
+    rgb = np.zeros((H, W, 3), np.uint8)
+    alpha = np.zeros((H, W), bool)
+    frag = _rasterize(mesh, c2w, res, faces_keep)
+    if frag is None:
+        return rgb, alpha
+
+    tex = np.asarray(texture)[..., :3]
+    th, tw = tex.shape[:2]
+    uvc = np.asarray(mesh.uv_vertices, np.float64)[frag["FT"][frag["face"]]]
+    uv = (uvc * frag["bary"][:, :, None]).sum(1)
     tx = np.clip((uv[:, 0] * (tw - 1)).round().astype(np.int64), 0, tw - 1)
     ty = np.clip((uv[:, 1] * (th - 1)).round().astype(np.int64), 0, th - 1)
-
-    flat_rgb = rgb.reshape(-1, 3)
-    flat_rgb[pix[sel]] = tex[ty, tx]
-    alpha.reshape(-1)[pix[sel]] = True
+    rgb.reshape(-1, 3)[frag["pix"]] = tex[ty, tx]
+    alpha.reshape(-1)[frag["pix"]] = True
     return rgb, alpha
+
+
+def render_shape(mesh: Mesh, c2w, res: int = 512, faces_keep=None,
+                 base: int = 235, ambient: float = 0.18) -> tuple[np.ndarray, np.ndarray]:
+    """One view of the UNTEXTURED surface, shaded so its shape is readable.
+
+    This is what a captioner is shown. It needs no texture and no UV layout,
+    which is the point: the loop has to be able to ask "what is this object"
+    before it has anything to paint. The prompt tells the model the colour is a
+    placeholder and to read the shape, which is exactly what the campaign did
+    with solid-coloured objects.
+
+    Flat per-face shading against the view direction: enough to read a
+    silhouette and its major surfaces, and deliberately not a lighting model --
+    nothing downstream measures these pixels.
+    """
+    H = W = int(res)
+    rgb = np.zeros((H, W, 3), np.uint8)
+    alpha = np.zeros((H, W), bool)
+    frag = _rasterize(mesh, c2w, res, faces_keep)
+    if frag is None:
+        return rgb, alpha
+
+    V = np.asarray(mesh.vertices, np.float64)
+    tri = V[frag["F"][frag["face"]]]                       # [K, 3, 3]
+    n = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
+    n /= np.clip(np.linalg.norm(n, axis=1, keepdims=True), 1e-12, None)
+    # the camera's +Z axis points back towards the viewer, so a face turned
+    # towards it has a positive dot product; an inward-facing shell gets the
+    # same treatment via the absolute value rather than going black
+    lam = np.abs(n @ frag["c2w"][:3, 2])
+    shade = np.clip(ambient + (1.0 - ambient) * lam, 0.0, 1.0)
+    grey = (shade * base).round().astype(np.uint8)
+    rgb.reshape(-1, 3)[frag["pix"]] = grey[:, None]
+    alpha.reshape(-1)[frag["pix"]] = True
+    return rgb, alpha
+
+
+def render_shape_views(mesh: Mesh, res: int = 512, views=(0, 1),
+                       faces_keep=None) -> list[tuple[np.ndarray, np.ndarray]]:
+    """Untextured views for the captioner, from the box rig.
+
+    Two by default -- front and right -- which is what the campaign showed its
+    captioner. A third view rarely changes the answer and costs a token budget
+    the prompt does not have.
+    """
+    m = Mesh(vertices=normalize_to_box(mesh.vertices), faces=mesh.faces,
+             uv_vertices=mesh.uv_vertices, uv_faces=mesh.uv_faces)
+    return [render_shape(m, BOX_VIEWS[i], res=res, faces_keep=faces_keep)
+            for i in views]
 
 
 def render_box_views(mesh: Mesh, texture, res: int = 512,

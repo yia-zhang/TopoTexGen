@@ -75,6 +75,14 @@ def prepare_mesh(work: Path, mesh_path: str | Path, *, resolution: int = 256,
 
     mesh = load_mesh(src)
     out_of_range = False
+    if not mesh.has_uv and src.suffix.lower() in (".glb", ".gltf"):
+        from topotexgen.geometry.mesh import gltf_has_texcoord
+        if gltf_has_texcoord(src):
+            notes.append(
+                "this glTF declares TEXCOORD_0 but no material on its "
+                "primitive, so the loader could not expose the layout; it was "
+                "replaced by a fresh unwrap. Attach a material to the "
+                "primitive to have the authored layout honoured.")
     if mesh.has_uv:
         lo, hi = float(mesh.uv_vertices.min()), float(mesh.uv_vertices.max())
         out_of_range = lo < -1e-3 or hi > 1 + 1e-3

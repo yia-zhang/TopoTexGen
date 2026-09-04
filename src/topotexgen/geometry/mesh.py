@@ -118,8 +118,41 @@ def load_obj(path: str | Path) -> Mesh:
     return m
 
 
+def gltf_has_texcoord(path: str | Path) -> bool:
+    """Does the file itself declare a UV layout?
+
+    Asked separately from loading it, because trimesh only builds the visual
+    that carries UVs when a primitive has a MATERIAL. A texture-less mesh --
+    exactly what this loop is for -- can carry TEXCOORD_0 and no material, and
+    then the layout is invisible to the loader. Knowing that lets the caller be
+    told its layout was dropped instead of quietly getting a new one.
+    """
+    try:
+        import pygltflib
+    except ImportError:                                       # pragma: no cover
+        return False
+    try:
+        g = pygltflib.GLTF2().load(str(path))
+        return any(getattr(pr.attributes, "TEXCOORD_0", None) is not None
+                   for m in (g.meshes or []) for pr in (m.primitives or []))
+    except Exception:                                         # pragma: no cover
+        return False
+
+
 def load_glb(path: str | Path) -> Mesh:
-    """glTF/GLB via trimesh, whose UVs are already top-down -- no flip.
+    """glTF/GLB via trimesh, with trimesh's own UV flip undone.
+
+    The trap, measured rather than assumed: **trimesh flips v on import and
+    again on export**, so the array it hands back is ``1 - v`` of the bytes in
+    the file. glTF's own convention is v top-down and so is this package's, so
+    the flip has to be undone here. Verified against the raw ``TEXCOORD_0``
+    accessor: a file holding v = 0.8 arrives from trimesh as 0.2.
+
+    Getting this wrong is invisible. The texture comes out vertically mirrored,
+    which is a plausible image, and an OBJ-style round-trip test cannot see it
+    because two flips cancel -- the test has to compare against the file's own
+    accessor bytes. (The dataset builder that produced the shipped textures
+    does the same flip, for the same reason.)
 
     trimesh is an extra rather than a dependency: the deterministic half of
     this package runs with numpy alone, and only mesh INTAKE needs a glTF
@@ -138,9 +171,10 @@ def load_glb(path: str | Path) -> Mesh:
              faces=np.asarray(scene.faces, np.int64))
     uv = getattr(getattr(scene, "visual", None), "uv", None)
     if uv is not None and len(uv) == len(m.vertices):
-        # one uv per vertex: the uv topology is the mesh topology
-        m.uv_vertices = np.asarray(uv, np.float64)
-        m.uv_faces = m.faces.copy()
+        uv = np.asarray(uv, np.float64).copy()
+        uv[:, 1] = 1.0 - uv[:, 1]         # undo trimesh's import flip
+        m.uv_vertices = uv
+        m.uv_faces = m.faces.copy()       # one uv per vertex: uv topology == mesh
     m.check()
     return m
 

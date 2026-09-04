@@ -1,5 +1,6 @@
 """``topotexgen`` command line.
 
+    topotexgen --config run.yaml prepare   --mesh chair.obj [more.glb ...]
     topotexgen --config run.yaml select    --population uids.json [--pilot 64]
     topotexgen --config run.yaml caption                 (spawns caption workers)
     topotexgen --config run.yaml reference               (spawns reference workers)
@@ -54,6 +55,21 @@ def cmd_select(a) -> int:
     raw = json.loads(Path(a.population).read_text())
     uids = raw["uids"] if isinstance(raw, dict) else raw
     print(json.dumps(r.select(uids, pilot=a.pilot, reason=a.reason or ""), indent=1))
+    return 0
+
+
+def cmd_prepare(a) -> int:
+    """Mesh in: identity, a UV layout, and the address maps. No models."""
+    from topotexgen.stages.prepare import prepare_mesh
+    r = _run(a)
+    r.cfg.require_paths("work")
+    out = []
+    for m in a.mesh:
+        p = prepare_mesh(r.work, m, resolution=r.cfg.recipe.texture_resolution)
+        out.append(dict(vars(p)))
+    rep = r.extend_population([o["uid"] for o in out],
+                              reason=f"prepared {len(out)} mesh(es)")
+    print(json.dumps({"prepared": out, "population": rep}, indent=1))
     return 0
 
 
@@ -296,6 +312,10 @@ def main(argv: list[str] | None = None) -> int:
     q = sub.add_parser("assetize", help="atlas -> delivered texture (no models)")
     q.add_argument("--limit", type=int, default=0)
     q.set_defaults(fn=cmd_assetize)
+
+    q = sub.add_parser("prepare", help="mesh -> uid, UV layout, address maps (no models)")
+    q.add_argument("--mesh", nargs="+", required=True, help=".obj / .glb file(s)")
+    q.set_defaults(fn=cmd_prepare)
 
     q = sub.add_parser("measure", help="measure staged textures (no models)")
     q.set_defaults(fn=cmd_measure)

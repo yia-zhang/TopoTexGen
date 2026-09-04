@@ -71,7 +71,36 @@ class Run:
         tmp = p.with_suffix(".json.part")
         tmp.write_text(json.dumps(rec, indent=1))
         tmp.replace(p)
-        return {k: v for k, v in rec.items() if k != "objects"}
+        # the record on disk carries the whole config; what a caller wants back
+        # is what happened. Echoing the config makes every command's output
+        # unreadable and buries the number that matters.
+        return {"objects": len(chosen), "pilot": int(pilot), "reason": reason,
+                "recipe_digest": rec["recipe_digest"],
+                "population": str(p)}
+
+    def extend_population(self, uids, *, reason: str = "") -> dict:
+        """Add objects to the work set, keeping the record's shape.
+
+        A mesh-driven run has no external uid list to ``select`` from: the
+        objects arrive one file at a time. Merging rather than overwriting is
+        what lets a run grow without losing the products already keyed to the
+        objects in it.
+        """
+        p = self.work / "population.json"
+        rec = json.loads(p.read_text()) if p.exists() else None
+        if rec is None:
+            return self.select(uids, reason=reason or "prepared from meshes")
+        have = list(rec.get("objects") or [])
+        merged = ordered(set(have) | set(uids))
+        rec["objects"] = merged
+        rec["n"] = len(merged)
+        rec["extended_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+        if reason:
+            rec["reason"] = (rec.get("reason") or "") + f"; {reason}"
+        tmp = p.with_suffix(".json.part")
+        tmp.write_text(json.dumps(rec, indent=1))
+        tmp.replace(p)
+        return {"objects": len(merged), "added": len(set(uids) - set(have))}
 
     def population(self) -> list[str]:
         p = self.work / "population.json"

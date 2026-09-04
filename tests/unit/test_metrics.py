@@ -47,19 +47,35 @@ def test_the_reference_witness_abstains_when_it_cannot_find_a_subject():
 
 def test_identical_views_are_reported_as_a_ceiling_not_as_missing():
     a = np.random.default_rng(1).integers(0, 255, (32, 32, 3), dtype=np.uint8)
-    r = M.atlas_view_agreement([a, a], [a, a])
+    r = M.atlas_view_agreement([a, a], [a[::-1], a[::-1]], [a, a])
     assert r["g8_psnr"] == M.PSNR_CEILING and r["g8_exact_views"] == 2
 
 
 def test_a_flipped_atlas_scores_better_flipped():
+    """The verdict's whole G8 rule is "does the flipped variant fit better",
+    so the two renders must come from the two ATLASES. Flipping the rendered
+    image instead mirrors the silhouette as well, which is a different bug."""
     a = np.random.default_rng(2).integers(0, 255, (32, 32, 3), dtype=np.uint8)
-    r = M.atlas_view_agreement([np.flipud(a)], [a])
+    # the atlas was upside down: the as-is render disagrees with the reference
+    # and the render from the flipped atlas is the one that matches
+    r = M.atlas_view_agreement([np.flipud(a)], [a], [a])
     assert r["g8_psnr_flip"] > r["g8_psnr"]
+    assert r["g8_psnr_flip"] == M.PSNR_CEILING
+
+
+def test_the_flipped_variant_is_not_derived_by_flipping_the_render():
+    """Guards the signature: a measure that produced the flipped variant itself
+    would have to flip the image, and then a correct atlas on a vertically
+    symmetric silhouette could score as flipped."""
+    import inspect
+    src = inspect.getsource(M.atlas_view_agreement)
+    assert "flipud" not in src, "the flipped variant must be rendered, not mirrored"
+    assert len(inspect.signature(M.atlas_view_agreement).parameters) >= 4
 
 
 def test_no_measurable_view_yields_no_number():
     a = np.zeros((16, 16, 3), np.uint8)
-    r = M.atlas_view_agreement([a], [a], masks=[np.zeros((16, 16), bool)])
+    r = M.atlas_view_agreement([a], [a], [a], masks=[np.zeros((16, 16), bool)])
     assert r["g8_psnr"] is None and r["g8_views_measured"] == 0
 
 
@@ -131,7 +147,7 @@ def test_every_field_the_verdict_reads_is_minted_by_a_measure():
     produced = set()
     produced |= set(M.dark_coverage(tex, vm))
     produced |= set(M.reference_dark_fraction(np.full((64, 64, 3), 200, np.uint8)))
-    produced |= set(M.atlas_view_agreement([tex], [tex]))
+    produced |= set(M.atlas_view_agreement([tex], [tex], [tex]))
     produced |= set(M.framing([vm.astype(np.uint8) * 255], [vm.astype(np.uint8) * 255]))
     produced |= set(M.cross_family_disagreement({"a": np.zeros((4, 3)), "b": np.zeros((4, 3))}))
     produced |= set(M.albedo_ratio(0.5, 1.0))

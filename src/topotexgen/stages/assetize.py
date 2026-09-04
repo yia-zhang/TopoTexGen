@@ -36,6 +36,12 @@ class AssetizeResult:
     #: the caller, because G1 and G7 both measure over it and a mask derived a
     #: second way would not be the one the margin was applied against.
     valid_mask: np.ndarray
+    #: the same atlas WITHOUT the margin convention: fully dilated, no black
+    #: beyond the ring. This is what a renderer should sample, and what the
+    #: external orientation check compares -- faces whose texels fall outside
+    #: the bake's valid mask (pre-existing UV coverage debt) still have to show
+    #: painted colour, or the check reads that debt as a texture defect.
+    texture_full: np.ndarray
     stats: dict
 
     @property
@@ -80,6 +86,7 @@ def deliver_texture(atlas: np.ndarray, atlas_valid: np.ndarray, *,
     return AssetizeResult(
         texture=delivered,
         valid_mask=vm_small,
+        texture_full=small,
         stats={"atlas_resolution": int(atlas.shape[0]),
                "delivered_resolution": int(size),
                "valid_fraction": round(float(vm_small.mean()), 4),

@@ -38,7 +38,8 @@ UNMEASURABLE_HERE = {
           "disagrees even for a correct texture",
     "g7": "needs the ring measured on the RESAMPLED families, which needs a UV "
           "rasteriser; on the primary family the check is zero by construction",
-    "g8": "needs our mesh re-rendered from the generator's own view rig",
+    "g8": "needs the mesh this run handed the generator and the generator's own "
+          "multi-view sheet; measured in software when both are present",
 }
 
 FAMILIES = ("xatlas", "smart_uv", "partial")
@@ -87,8 +88,16 @@ def read_families(sample_dir: Path, *, stride: int = 4) -> tuple[dict, dict] | N
 
 
 def measure_object(uid: str, staging: Path, *, reference: Path | None = None,
-                   sample_dir: Path | None = None, margin_px: int = 4) -> dict:
-    """Everything this package can measure about one staged object."""
+                   sample_dir: Path | None = None, margin_px: int = 4,
+                   mesh=None, mv_sheet: Path | None = None,
+                   g8_res: int = 512) -> dict:
+    """Everything this package can measure about one staged object.
+
+    ``mesh`` and ``mv_sheet`` unlock G8, which is the check worth having: it is
+    the only one whose reference is not derived from the atlas being judged.
+    Both are optional because a run that supplied its own atlas may not have
+    kept the generator's views.
+    """
     row: dict = {"uid": uid}
     unmeasured: list[str] = []
 
@@ -143,7 +152,20 @@ def measure_object(uid: str, staging: Path, *, reference: Path | None = None,
         row["family_resolve"] = {
             fam: round(float((c.max(-1) > 0).mean()), 4) for fam, c in cols.items()}
 
-    # ---- G3, G4, G5, G8: the renderer's numbers, if it left any
+    # ---- G8: the external check. Rendered here, in software.
+    if mesh is not None and mv_sheet is not None and Path(mv_sheet).exists():
+        full = _png(staging / "texture_full.png")
+        if full is None:
+            full = texture          # older staging: the margined atlas is close
+        try:
+            from PIL import Image
+            row.update(measure_g8(mesh, full,
+                                  np.asarray(Image.open(mv_sheet).convert("RGB")),
+                                  res=g8_res))
+        except Exception as e:      # a measurement failure is a row, not a crash
+            row["g8_error"] = f"{type(e).__name__}: {e}"
+
+    # ---- G3, G4, G5: the renderer's numbers, if it left any
     rp = staging / "render.json"
     if rp.exists():
         supplied = json.loads(rp.read_text())
@@ -178,3 +200,61 @@ def write_measurements(rows, out: Path, *, fresh: int | None = None) -> dict:
             "errors": sum(1 for r in rows if r.get("error")),
             "unmeasured_fields": dict(absent.most_common()),
             "measurements": str(out)}
+
+
+# --------------------------------------------------------------------- G8
+def measure_g8(mesh, texture_full, mv_sheet, *, res: int = 512,
+               faces_keep=None) -> dict:
+    """G8: does this atlas reproduce the generator's OWN views?
+
+    The only external check a generated texture gets. Every other artefact --
+    the delivered ground truth, the condition views, a golden re-render -- is
+    derived from the same atlas, so all of them agree with each other on a
+    mirrored or mis-mapped one. The generator's multi-view sheet is not, which
+    is why an atlas flip once passed an eight-of-eight pilot and seven other
+    gates and shipped on 2,186 objects.
+
+    Rendered in software (see ``geometry.view``), so this needs no renderer and
+    no GPU. Both variants are RE-RENDERED -- the as-is atlas and the flipped
+    atlas -- rather than one render being mirrored, because mirroring the image
+    moves the silhouette too and would answer a different question.
+    """
+    from topotexgen.geometry.view import reference_foreground, render_box_views, split_mv_sheet
+
+    tex = np.asarray(texture_full)[..., :3]
+    tiles = split_mv_sheet(mv_sheet)
+    direct = render_box_views(mesh, tex, res=res, faces_keep=faces_keep)
+    mirror = render_box_views(mesh, np.flipud(tex), res=res, faces_keep=faces_keep)
+
+    from PIL import Image
+    rendered, flipped, refs, masks, ious = [], [], [], [], []
+    for (rgb, alpha), (frgb, _), tile in zip(direct, mirror, tiles, strict=True):
+        t = np.asarray(tile)[..., :3]
+        if t.shape[:2] != rgb.shape[:2]:
+            t = np.asarray(Image.fromarray(t.astype(np.uint8))
+                           .resize(rgb.shape[1::-1]))
+        fg = reference_foreground(t)
+        # compare only where both agree there is an object: the reference's
+        # own ground and our background carry no texture to judge
+        both = alpha & fg
+        ious.append(round(float((alpha & fg).sum() / max((alpha | fg).sum(), 1)), 4))
+        rendered.append(rgb)
+        flipped.append(frgb)
+        refs.append(t)
+        masks.append(both if both.sum() >= 100 else np.zeros_like(both))
+
+    out = M.atlas_view_agreement(rendered, flipped, refs, masks=masks)
+    out["g8_iou"] = round(float(np.median(ious)), 4)
+    return out
+
+
+def read_generator_mesh(work: Path, uid: str):
+    """The mesh as the generator saw it: the OBJ this run handed it.
+
+    Read back rather than re-derived. The OBJ is what the generator painted
+    into, so a mesh reconstructed some other way could disagree with the atlas
+    it produced -- and the disagreement would look like a texture defect.
+    """
+    from topotexgen.geometry.mesh import load_obj
+    p = work / "mesh" / f"{uid}.obj"
+    return load_obj(p) if p.exists() else None

@@ -173,6 +173,9 @@ def cmd_assetize(a) -> int:
         # the mask the margin was actually applied against: G1 and G7 measure
         # over it, and deriving it a second way would measure a different mask
         Image.fromarray((res.valid_mask > 0).astype(np.uint8) * 255).save(out / "mask.png")
+        # the un-margined atlas: what a renderer samples, and what the external
+        # orientation check is measured against
+        Image.fromarray(res.texture_full).save(out / "texture_full.png")
         stats = {**res.stats, "delivered_digest": res.digest,
                  "atlas_digest": atlas_digest,
                  "generation_key": r.key_of(uid), "delivery_key": r.delivery_key_of(uid)}
@@ -207,8 +210,11 @@ def cmd_measure(a) -> int:
             except FileNotFoundError:
                 sample = None
         ref = r.work / "refs" / f"{uid}.png"
+        from topotexgen.stages.measure import read_generator_mesh
         row = measure_object(uid, staging, reference=ref if ref.exists() else None,
-                             sample_dir=sample, margin_px=r.cfg.recipe.margin_px)
+                             sample_dir=sample, margin_px=r.cfg.recipe.margin_px,
+                             mesh=read_generator_mesh(r.work, uid),
+                             mv_sheet=r.work / "atlas" / uid / "mv_rgb.png")
         rows.append(row)
         if row.get("error"):
             q.release(uid)

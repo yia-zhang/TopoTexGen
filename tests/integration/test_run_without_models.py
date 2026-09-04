@@ -298,3 +298,124 @@ def test_a_touched_but_identical_atlas_costs_a_read_and_no_redelivery(run_dir, c
     assert out["unchanged_atlas"] == 1, "the digest did not settle a false alarm"
     assert out["assetized"] == 0
     assert (work / "staging" / UIDS[0] / "texture.png").read_bytes() == before
+
+
+# ------------------------------------------------------------------ G8 in situ
+_BOX_V = np.array([[-1, -1, -1], [1, -1, -1], [1, 1, -1], [-1, 1, -1],
+                   [-1, -1, 1], [1, -1, 1], [1, 1, 1], [-1, 1, 1]], float)
+_BOX_F = np.array([[0, 2, 1], [0, 3, 2], [4, 5, 6], [4, 6, 7],
+                   [0, 1, 5], [0, 5, 4], [3, 7, 6], [3, 6, 2],
+                   [0, 4, 7], [0, 7, 3], [1, 2, 6], [1, 6, 5]])
+
+
+def _box_with_uv():
+    from topotexgen.geometry.mesh import Mesh
+    uv, uvf = [], []
+    for i in range(len(_BOX_F)):
+        c = ((i % 4) / 4.0, (i // 4) / 4.0)
+        b = len(uv)
+        uv += [(c[0] + 0.01, c[1] + 0.01), (c[0] + 0.24, c[1] + 0.01),
+               (c[0] + 0.24, c[1] + 0.24)]
+        uvf.append((b, b + 1, b + 2))
+    return Mesh(vertices=_BOX_V.copy(), faces=_BOX_F.copy(),
+                uv_vertices=np.asarray(uv), uv_faces=np.asarray(uvf))
+
+
+@pytest.fixture
+def g8_run(tmp_path):
+    """A run whose object has a mesh, an atlas, and the generator's own views —
+    everything G8 needs. The multi-view sheet is produced by rendering the
+    CORRECT atlas, which is what a generator that painted consistently leaves
+    behind."""
+    from topotexgen.geometry.mesh import write_generator_obj
+    from topotexgen.geometry.view import render_box_views
+
+    uid = "0" * 32
+    work = tmp_path / "work"
+    cfg = tmp_path / "run.yaml"
+    cfg.write_text("paths:\n"
+                   f"  work: {work}\n"
+                   f"  sample_roots: [{tmp_path / 'samples'}]\n"
+                   "recipe:\n  texture_resolution: 128\n  margin_px: 4\n")
+    (tmp_path / "population.json").write_text(json.dumps([uid]))
+
+    mesh = _box_with_uv()
+    write_generator_obj(mesh, work / "mesh" / f"{uid}.obj")
+
+    # an atlas with strong vertical structure, so a flip is unmistakable
+    res = 256
+    atlas = np.zeros((res, res, 3), np.uint8)
+    vm = np.zeros((res, res), bool)
+    for i in range(len(_BOX_F)):
+        c = ((i % 4) / 4.0, (i // 4) / 4.0)
+        y0, y1 = int(c[1] * res), int((c[1] + 0.25) * res)
+        x0, x1 = int(c[0] * res), int((c[0] + 0.25) * res)
+        vm[y0:y1, x0:x1] = True
+        half = (y0 + y1) // 2
+        atlas[y0:half, x0:x1] = (230, 40, 40)
+        atlas[half:y1, x0:x1] = (40, 40, 230)
+    d = work / "atlas" / uid
+    d.mkdir(parents=True, exist_ok=True)
+    Image.fromarray(atlas).save(d / "atlas.png")
+    Image.fromarray((vm * 255).astype(np.uint8)).save(d / "valid.png")
+
+    # the generator's own six views, tiled 2 x 3 as it writes them
+    views = render_box_views(mesh, atlas, res=128)
+    sheet = np.concatenate([np.concatenate([views[r * 3 + c][0] for c in range(3)], axis=1)
+                            for r in range(2)], axis=0)
+    Image.fromarray(sheet).save(d / "mv_rgb.png")
+
+    (work / "captions.jsonl").parent.mkdir(parents=True, exist_ok=True)
+    (work / "captions.jsonl").write_text(json.dumps({"uid": uid, "caption": "a box"}) + "\n")
+    return tmp_path, cfg, work, uid
+
+
+def test_g8_is_measured_and_passes_for_a_correctly_mapped_atlas(g8_run, capsys):
+    """The gate that matters, in the pipeline rather than in a unit test."""
+    tmp, cfg, work, uid = g8_run
+    main(["--config", str(cfg), "select", "--population", str(tmp / "population.json")])
+    mark_generated(cfg, [uid])
+    assert main(["--config", str(cfg), "assetize"]) == 0
+    capsys.readouterr()                       # one command's json per read
+    assert main(["--config", str(cfg), "measure"]) == 0
+    rep = json.loads(capsys.readouterr().out)
+    assert "g8" not in rep["unmeasured_fields"], "G8 should now be measurable"
+
+    row = json.loads((work / "gates" / "measurements.jsonl").read_text().splitlines()[0])
+    assert "g8_error" not in row, row.get("g8_error")
+    assert row["g8_psnr"] is not None and row["g8_views_measured"] == 6
+    assert row["g8_psnr"] > row["g8_psnr_flip"] + 3.0, (
+        f"the correct atlas must win clearly: {row['g8_psnr']} vs {row['g8_psnr_flip']}")
+    assert row["g8_iou"] > 0.95
+
+
+def test_a_FLIPPED_ATLAS_FAILS_THE_GATE(g8_run, capsys):
+    """The 2026-08-28 incident, as a regression.
+
+    A vertically flipped atlas produces a plausible texture and self-consistent
+    derivatives, so it passed a pilot and seven gates and shipped on 2,186
+    objects. Only the generator's own views disagree — so this must end in
+    FAIL:G8_VIEW_MISMATCH, not in a pass.
+    """
+    tmp, cfg, work, uid = g8_run
+    main(["--config", str(cfg), "select", "--population", str(tmp / "population.json")])
+
+    d = work / "atlas" / uid
+    a = np.asarray(Image.open(d / "atlas.png"))
+    Image.fromarray(np.flipud(a)).save(d / "atlas.png")          # the incident
+    v = np.asarray(Image.open(d / "valid.png"))
+    Image.fromarray(np.flipud(v)).save(d / "valid.png")
+
+    mark_generated(cfg, [uid])
+    main(["--config", str(cfg), "assetize"])
+    main(["--config", str(cfg), "measure"])
+    capsys.readouterr()
+
+    row = json.loads((work / "gates" / "measurements.jsonl").read_text().splitlines()[0])
+    assert row["g8_psnr_flip"] > row["g8_psnr"], (
+        "a flipped atlas was not detected as flipped")
+
+    assert main(["--config", str(cfg), "gate"]) == 0
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["pass"] == 0
+    assert "FAIL:G8_VIEW_MISMATCH" in summary["by_verdict"], summary["by_verdict"]

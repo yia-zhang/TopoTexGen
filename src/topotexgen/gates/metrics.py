@@ -101,19 +101,29 @@ def psnr(a: np.ndarray, b: np.ndarray, *, mask: np.ndarray | None = None) -> flo
 PSNR_CEILING = 99.0
 
 
-def atlas_view_agreement(rendered, reference_views, *, masks=None) -> dict:
-    """G8: median PSNR between views re-rendered from the atlas and the
-    generator's own views, and the same for a vertically flipped atlas.
+def atlas_view_agreement(rendered, rendered_from_flipped_atlas,
+                         reference_views, *, masks=None) -> dict:
+    """G8: does the atlas reproduce the generator's own views, and does the
+    FLIPPED atlas reproduce them better?
 
-    The flipped variant is the point: a mis-mapped or upside-down atlas can
-    still produce plausible colours, and only the comparison catches it.
+    The flipped variant is the entire point: a mis-mapped or upside-down atlas
+    still produces plausible colours, so only a comparison against something
+    not derived from it can tell.
+
+    Both variants are passed IN as renders, deliberately. Flipping the
+    rendered image instead would be a different test -- it mirrors the
+    silhouette too, and so measures a camera-convention bug rather than an
+    atlas-orientation one. The flipped variant has to come from re-rendering
+    the flipped atlas, which only the caller can do.
 
     Views whose PSNR is undefined (an empty mask) are skipped and counted; if
     every view is undefined the medians are None, which the verdict layer
     treats as a failure rather than a pass.
     """
-    if len(rendered) != len(reference_views):
-        raise ValueError("one rendered view per reference view is required")
+    if not (len(rendered) == len(rendered_from_flipped_atlas)
+            == len(reference_views)):
+        raise ValueError("one rendered view, one flipped render and one "
+                         "reference view per view is required")
     ms = masks if masks is not None else [None] * len(rendered)
 
     def _median(values):
@@ -122,8 +132,9 @@ def atlas_view_agreement(rendered, reference_views, *, masks=None) -> dict:
 
     direct = [psnr(r, g, mask=m)
               for r, g, m in zip(rendered, reference_views, ms, strict=True)]
-    flipped = [psnr(np.flipud(np.asarray(r)), g, mask=m)
-               for r, g, m in zip(rendered, reference_views, ms, strict=True)]
+    flipped = [psnr(r, g, mask=m)
+               for r, g, m in zip(rendered_from_flipped_atlas, reference_views, ms,
+                                  strict=True)]
     med, n_used = _median(direct)
     med_f, _ = _median(flipped)
     return {"g8_psnr": med, "g8_psnr_flip": med_f,

@@ -5,12 +5,19 @@
     topotexgen --config run.yaml reference               (spawns reference workers)
     topotexgen --config run.yaml generate                (spawns generator workers)
     topotexgen --config run.yaml assetize                (no models needed)
+    topotexgen --config run.yaml measure                 (no models needed)
     topotexgen --config run.yaml gate      [--gates-config gates.yaml]
     topotexgen --config run.yaml status
 
 ``--config`` is a top-level option, so it comes BEFORE the subcommand. The
 three model stages run in their own environments and refuse to guess where
-those are; ``assetize``, ``gate`` and ``status`` run anywhere.
+those are; ``select``, ``assetize``, ``measure``, ``gate`` and ``status`` run
+anywhere, and are the path a host without the generator can exercise
+end-to-end.
+
+Four of the gates need re-rendered views, which no stage here produces: supply
+their numbers as ``staging/<uid>/render.json`` or accept that ``gate`` fails
+them. It reports which, rather than passing them by default.
 """
 from __future__ import annotations
 
@@ -27,6 +34,19 @@ WORKERS = Path(__file__).resolve().parent / "workers"
 
 def _run(a) -> Run:
     return Run(RunConfig.load(a.config))
+
+
+def _digest_bytes(*paths: Path) -> str:
+    """A digest over the files a product was derived FROM.
+
+    Recorded next to the product so "is this still derived from what is on
+    disk?" is answerable without trusting a timestamp.
+    """
+    import hashlib
+    h = hashlib.sha256()
+    for p in paths:
+        h.update(p.read_bytes())
+    return h.hexdigest()[:16]
 
 
 def cmd_select(a) -> int:
@@ -88,9 +108,41 @@ def cmd_assetize(a) -> int:
     from topotexgen.stages.assetize import deliver_texture
     r = _run(a)
     q = r.queue("assetize", owner="assetize")
-    done = failed = 0
-    for claim in q.iter_work(r.population(), r.key_of, limit=a.limit):
+    gen = r.queue("generate", owner="assetize")
+
+    def key_for_delivery(uid: str) -> str:
+        """The delivery key, plus a cheap "is the atlas newer than the product
+        that claims to come from it" test.
+
+        Two stat calls per object rather than a digest of every atlas: in the
+        steady state that is the difference between a few milliseconds and
+        re-reading every 2048-px atlas in the population. The digest inside the
+        loop then decides whether the bytes really changed, so an atlas that
+        was merely touched costs one read and no re-delivery.
+        """
+        dk = r.delivery_key_of(uid)
+        m = q.completed_mtime(uid)
+        if m is None:
+            return dk
+        ap = r.work / "atlas" / uid / "atlas.png"
+        try:
+            newer = ap.stat().st_mtime > m
+        except OSError:
+            newer = False
+        return dk + "|atlas-newer" if newer else dk
+
+    done = failed = stale = skipped = 0
+    for claim in q.iter_work(r.population(), key_for_delivery, limit=a.limit):
         uid = claim.uid
+        # The atlas lives at a path that carries no key, so its EXISTENCE says
+        # nothing about which caption or recipe produced it. Ask the stage that
+        # made it. Without this, editing a caption re-delivers the OLD atlas
+        # and stamps the new key onto it -- the "cached by existence" failure
+        # the key was introduced to prevent, one stage further down.
+        if not gen.is_done(uid, r.key_of(uid)):
+            q.release(uid)
+            stale += 1
+            continue
         atlas_p = r.work / "atlas" / uid / "atlas.png"
         mask_p = r.work / "atlas" / uid / "valid.png"
         if not (atlas_p.exists() and mask_p.exists()):
@@ -99,15 +151,81 @@ def cmd_assetize(a) -> int:
             continue
         atlas = np.asarray(Image.open(atlas_p).convert("RGB"))
         vm = np.asarray(Image.open(mask_p).convert("L")) > 127
+        # ...and which BYTES it came from. The generate queue can legitimately
+        # complete twice at the same key -- a crash and a retry -- leaving a
+        # different atlas behind the same marker, and the delivery key would
+        # not move. The original campaign guarded this with two mtime
+        # comparisons; a digest of the atlas is the same guard without
+        # depending on timestamps surviving a copy or a restore.
+        atlas_digest = _digest_bytes(atlas_p, mask_p)
+        prior = q.completed_extra(uid) or {}
+        if (prior.get("atlas_digest") == atlas_digest
+                and prior.get("delivery_key") == r.delivery_key_of(uid)):
+            # the atlas is newer but its bytes are the same: touched, restored
+            # or re-copied. Nothing to redo.
+            q.release(uid)
+            skipped += 1
+            continue
         res = deliver_texture(atlas, vm, size=r.cfg.recipe.texture_resolution,
                               margin_px=r.cfg.recipe.margin_px)
         out = r.dir("staging", uid)
         Image.fromarray(res.texture).save(out / "texture.png")
-        (out / "assetize.json").write_text(json.dumps(res.stats, indent=1))
-        q.complete(uid, r.key_of(uid), **res.stats)
+        # the mask the margin was actually applied against: G1 and G7 measure
+        # over it, and deriving it a second way would measure a different mask
+        Image.fromarray((res.valid_mask > 0).astype(np.uint8) * 255).save(out / "mask.png")
+        stats = {**res.stats, "delivered_digest": res.digest,
+                 "atlas_digest": atlas_digest,
+                 "generation_key": r.key_of(uid), "delivery_key": r.delivery_key_of(uid)}
+        (out / "assetize.json").write_text(json.dumps(stats, indent=1))
+        q.complete(uid, r.delivery_key_of(uid), **stats)
         done += 1
-    print(json.dumps({"assetized": done, "missing_atlas": failed}, indent=1))
-    return 0 if not failed else 1
+    print(json.dumps({"assetized": done, "missing_atlas": failed,
+                      "atlas_not_current": stale,
+                      "unchanged_atlas": skipped}, indent=1))
+    return 0 if not (failed or stale) else 1
+
+
+def cmd_measure(a) -> int:
+    """Measure staged objects into gates/measurements.jsonl. Runs anywhere."""
+    from topotexgen.stages.measure import measure_object, write_measurements
+    r = _run(a)
+    q = r.queue("measure", owner="measure")
+    rows = []
+    # claimed through the queue like every other per-object stage, so a
+    # re-measure happens exactly when the delivery key moves and a killed pass
+    # resumes where it stopped
+    for claim in q.iter_work(r.population(), r.delivery_key_of, limit=0):
+        uid = claim.uid
+        staging = r.work / "staging" / uid
+        if not staging.exists():
+            q.release(uid)
+            continue
+        sample = None
+        if r.cfg.paths.sample_roots:
+            try:
+                sample = r.cfg.paths.resolve_sample(uid)
+            except FileNotFoundError:
+                sample = None
+        ref = r.work / "refs" / f"{uid}.png"
+        row = measure_object(uid, staging, reference=ref if ref.exists() else None,
+                             sample_dir=sample, margin_px=r.cfg.recipe.margin_px)
+        rows.append(row)
+        if row.get("error"):
+            q.release(uid)
+        else:
+            q.complete(uid, r.delivery_key_of(uid))
+    # rows already on disk from an earlier pass still have to reach the gate:
+    # a measurements file holding only this pass's objects would make the gate
+    # report a pass rate over a subset.
+    n_fresh = len(rows)
+    prev = r.work / "gates" / "measurements.jsonl"
+    if prev.exists():
+        seen = {row["uid"] for row in rows}
+        rows += [x for x in (json.loads(ln) for ln in prev.read_text().splitlines() if ln.strip())
+                 if x.get("uid") not in seen]
+    rep = write_measurements(rows, r.work / "gates" / "measurements.jsonl", fresh=n_fresh)
+    print(json.dumps(rep, indent=1))
+    return 0 if not rep["errors"] else 1
 
 
 def cmd_gate(a) -> int:
@@ -119,8 +237,9 @@ def cmd_gate(a) -> int:
     if not rows_p.exists():
         raise SystemExit(
             f"no measurements at {rows_p}. The gate stage judges stored "
-            f"measurements; run the measuring pass first (docs/specifications/"
-            f"gate-spec.md lists the fields each gate needs).")
+            f"measurements and does not invent them: run `topotexgen --config "
+            f"... measure` first (docs/specifications/gate-spec.md lists the "
+            f"fields each gate needs).")
     results = []
     out = r.dir("gates") / "verdicts.jsonl"
     with open(out, "w") as f:
@@ -133,7 +252,14 @@ def cmd_gate(a) -> int:
                                 "reasons": res.reasons, "logged": res.logged},
                                sort_keys=True) + "\n")
     s = summarise(results)
-    print(json.dumps({**s, "thresholds": t.version, "verdicts": str(out)}, indent=1))
+    # A gate that had nothing to judge on must not read as a clean bill of
+    # health, so say which fields were never measured and how many objects
+    # that affected.
+    from collections import Counter
+    absent = Counter(g for line in rows_p.read_text().splitlines() if line.strip()
+                     for g in json.loads(line).get("unmeasured", []))
+    print(json.dumps({**s, "thresholds": t.version, "verdicts": str(out),
+                      "unmeasured_fields": dict(absent.most_common())}, indent=1))
     return 0
 
 
@@ -164,6 +290,9 @@ def main(argv: list[str] | None = None) -> int:
     q = sub.add_parser("assetize", help="atlas -> delivered texture (no models)")
     q.add_argument("--limit", type=int, default=0)
     q.set_defaults(fn=cmd_assetize)
+
+    q = sub.add_parser("measure", help="measure staged textures (no models)")
+    q.set_defaults(fn=cmd_measure)
 
     q = sub.add_parser("gate", help="judge stored measurements")
     q.add_argument("--gates-config")

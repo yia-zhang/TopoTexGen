@@ -7,10 +7,10 @@ good enough to keep.
 
 | | |
 |---|---|
-| Pipeline | `select → caption → reference → generate → assetize → gate → commit` |
-| Decides what ships | eight quality gates, thresholds and calibration in [`configs/gates.yaml`](configs/gates.yaml) |
-| Runs without a GPU | `assetize`, `gate` and `status` — and the whole test suite |
-| Same object, same result | every product keyed by caption + attempt + recipe |
+| Pipeline | `select → caption → reference → generate → assetize → measure → gate` |
+| Decides what ships | eight measured properties, seven of them gated; thresholds and calibration in [`configs/gates.yaml`](configs/gates.yaml) |
+| Runs without a GPU | `select`, `assetize`, `measure`, `gate`, `status` — and the whole test suite |
+| Same object, same result | every product keyed by caption + attempt + the recipe VALUES that decide its pixels |
 
 The point of the design is the last two rows. The expensive part of texture
 regeneration is not generating a texture, it is knowing which generated
@@ -26,8 +26,8 @@ without redoing anything else.
 | `reference` | turn that prompt into a reference image, in batches | yes (a text-to-image model) |
 | `generate` | drive the reference around the object and bake the result into its UV atlas | yes (a texture generator) |
 | `assetize` | atlas → delivered texture: dilate, resample, re-apply the bake's margin convention | no |
-| `gate` | measure eight properties and judge them against calibrated thresholds | no |
-| `commit` | write accepted textures into the dataset under its errata protocol | no |
+| `measure` | measure the staged texture into one row per object, naming the gates it could not measure and why | no |
+| `gate` | judge stored measurements against calibrated thresholds | no |
 
 ## The gates
 
@@ -37,12 +37,12 @@ different kinds of wrong:
 | gate | catches |
 |---|---|
 | **G1** dark coverage | the generator painted nothing — but *only* when the reference image it worked from was not itself dark, because a black tyre is a correct black texture |
-| **G2** colour drift | logged, not gated: ground truth and condition views come from the same texture here, so drift is self-consistent supervision |
+| **G2** colour drift | **not gated and not computed here**: ground truth and condition views come from the same texture, so drift is self-consistent supervision. The original campaign still recorded the number; this package does not |
 | **G3** albedo ratio | detail painted on faces no camera can see |
 | **G4** framing | views that frame the object worse than its *own* originals (a thin plate seen edge-on is not a defect) |
 | **G5** re-render | the frozen-protocol re-render failed on too many views |
 | **G6** family agreement | the UV families disagree about the colour of the same surface point |
-| **G7** margin ring | the ring around each island breaks the bake convention, so seams appear |
+| **G7** margin ring | the ring around each island breaks the bake convention, so seams appear. **Not measurable here**: the check is only meaningful on the resampled families, which needs a UV rasteriser this package does not contain — on the primary family it is zero by construction. The margin kernel's own post-condition is asserted instead |
 | **G8** atlas vs views | the atlas is mis-mapped or flipped — the strongest structural check, and the one no colour statistic can see |
 
 Every threshold in `configs/gates.yaml` carries the evidence it was calibrated
@@ -63,6 +63,7 @@ topotexgen --config run.yaml caption
 topotexgen --config run.yaml reference
 topotexgen --config run.yaml generate
 topotexgen --config run.yaml assetize
+topotexgen --config run.yaml measure
 topotexgen --config run.yaml gate
 topotexgen --config run.yaml status
 ```
@@ -70,6 +71,52 @@ topotexgen --config run.yaml status
 `--config` is a top-level option, so it goes **before** the subcommand. Every
 stage is resumable: rerun it and it does the objects that are not already done
 *under the current recipe*, and nothing else.
+
+### On a host with no models
+
+The three model stages need their own environments and a checkout of the
+texture generator, and they refuse to guess where those are. Everything else
+runs anywhere, so a new host can exercise the whole deterministic half:
+
+```bash
+pip install -e ".[dev]" && pytest -q        # 84 tests, no GPU, ~1.5 s
+
+topotexgen --config run.yaml select --population uids.json
+# put an atlas where the generator would have left one:
+#   <work>/atlas/<uid>/atlas.png   and   <work>/atlas/<uid>/valid.png
+# and record that it landed, exactly as a generator worker must:
+#   WorkQueue(<work>/queue/generate, "you").complete(uid, run.key_of(uid))
+topotexgen --config run.yaml assetize       # -> staging/<uid>/texture.png + mask.png
+topotexgen --config run.yaml measure        # -> gates/measurements.jsonl
+topotexgen --config run.yaml gate           # -> gates/verdicts.jsonl
+topotexgen --config run.yaml status
+```
+
+**What that will and will not tell you.** `measure` computes G1 and its
+reference witness, asserts the margin kernel's post-condition, and reports the
+share of each UV family the atlas actually paints. The remaining six gates need
+something this package does not contain — four need re-rendered views, two need
+a UV rasteriser — so they are listed in each row's `unmeasured` with the reason,
+and `gate` **fails** them rather than passing them. A run without a renderer
+therefore ends in `FAIL:G8_MISSING`, by design: a missing measurement is a
+failure, never a pass. Supply a renderer's numbers as
+`staging/<uid>/render.json` (the `g*_` fields from
+[gate-spec.md](docs/specifications/gate-spec.md)) and they are folded in.
+
+### Why a stage will refuse work you think is ready
+
+Three deliberate refusals, each of which was a real bug in the pipeline this
+grew out of:
+
+* **`atlas_not_current`** — the `generate` queue has not completed this object
+  at the current key. An atlas sits at a path that carries no key, so its
+  existence says nothing about which caption produced it. Re-caption without
+  re-generating and the delivery is refused rather than re-labelled.
+* **`unchanged_atlas`** — the atlas file is newer than the delivered product,
+  but its bytes are identical (a copy, a restore, a `touch`). Nothing is redone.
+* **`superseded_by_recipe`** in `status` — a product exists but is bound to
+  different inputs. Editing `margin_px` reopens delivery and leaves generation
+  alone; editing `atlas_resolution` reopens both.
 
 ## What "optimised" means here
 

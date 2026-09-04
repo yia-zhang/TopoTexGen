@@ -74,3 +74,21 @@ def test_completion_records_who_did_it_and_under_which_key(root):
 def test_limit_bounds_how_much_one_worker_takes(root):
     q = WorkQueue(root, "a")
     assert len(list(q.iter_work(UIDS, lambda u: KEY, limit=3))) == 3
+
+
+def test_a_stage_can_read_back_what_the_previous_one_derived_its_product_from(tmp_path):
+    """A key says which INPUTS a product claims. It cannot say whether those
+    inputs are still the bytes on disk, so a stage records the digests it
+    derived from and the next stage reads them back. Existence is not
+    provenance, and a key alone is not either: a generator can complete twice
+    at the same key -- a crash and a retry -- leaving different bytes behind
+    the same marker.
+    """
+    q = WorkQueue(tmp_path / "q", "writer")
+    q.complete("u1", "key-A", atlas_digest="aaaa1111", delivery_key="d-1")
+    assert q.completed_key("u1") == "key-A"
+    extra = q.completed_extra("u1")
+    assert extra == {"atlas_digest": "aaaa1111", "delivery_key": "d-1"}
+    # the bookkeeping fields are not part of what a consumer reads back
+    assert "owner" not in extra and "at" not in extra
+    assert q.completed_extra("never-seen") is None

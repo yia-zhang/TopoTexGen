@@ -22,10 +22,17 @@ from pathlib import Path
 
 from topotexgen.config import RunConfig
 from topotexgen.ids import ordered
-from topotexgen.versions import VERSIONS, texture_key
+from topotexgen.versions import VERSIONS, delivery_key, recipe_digest, texture_key
 from topotexgen.workqueue import WorkQueue
 
-STAGES = ("caption", "reference", "generate", "assetize", "gate")
+#: Per-object stages, each with a claim/completion ledger. ``gate`` is not one
+#: of them: it is a single pass over the stored measurements, and its outcome
+#: is reported under "gates" rather than as per-object work.
+STAGES = ("caption", "reference", "generate", "assetize", "measure")
+
+#: Stages downstream of generation: they consume the atlas and are keyed by the
+#: delivery key, so a delivery-parameter edit re-runs them alone.
+DELIVERY_STAGES = ("assetize", "measure")
 
 
 @dataclass
@@ -53,7 +60,12 @@ class Run:
             chosen = chosen[:pilot]
         rec = {"objects": chosen, "n": len(chosen), "pilot": int(pilot),
                "reason": reason, "selected_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-               **VERSIONS}
+               **VERSIONS,
+               # the values that actually determined the pixels, not just the
+               # label for them: without this a work directory cannot say
+               # which margin or resolution its staged textures were made at.
+               "config": self.cfg.to_dict(),
+               "recipe_digest": recipe_digest(self.cfg.recipe)}
         p = self.work / "population.json"
         p.parent.mkdir(parents=True, exist_ok=True)
         tmp = p.with_suffix(".json.part")
@@ -87,8 +99,19 @@ class Run:
         return json.loads(p.read_text()) if p.exists() else {}
 
     def key_of(self, uid: str) -> str:
+        """The GENERATION key: caption, attempt, and the recipe values that
+        decide the atlas. Stages up to and including ``generate`` key off it."""
         caps, att = self.captions(), self.attempts()
-        return texture_key(caps.get(uid, ""), int(att.get(uid, 0)))
+        return texture_key(caps.get(uid, ""), int(att.get(uid, 0)), self.cfg.recipe)
+
+    def delivery_key_of(self, uid: str) -> str:
+        """The DELIVERY key: the atlas's key plus the delivery parameters.
+
+        Separate from ``key_of`` so that editing ``margin_px`` or
+        ``texture_resolution`` re-delivers from the existing atlas instead of
+        throwing away the GPU time that produced it.
+        """
+        return delivery_key(self.key_of(uid), self.cfg.recipe)
 
     # --------------------------------------------------------------- status
     def status(self) -> dict:
@@ -98,7 +121,8 @@ class Run:
                "stages": {}}
         for stage in STAGES:
             q = self.queue(stage)
-            out["stages"][stage] = q.status(uids, self.key_of)
+            key = self.delivery_key_of if stage in DELIVERY_STAGES else self.key_of
+            out["stages"][stage] = q.status(uids, key)
         vp = self.work / "gates" / "verdicts.jsonl"
         if vp.exists():
             from collections import Counter

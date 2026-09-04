@@ -1,5 +1,18 @@
 {
-  "why": "These kernels decide the PIXELS of a texture that has already shipped in a dataset. Reimplementing them would produce a different atlas for the same object, so they are carried verbatim from the campaign that produced the shipped textures and are excluded from linting (ADR 0002).",
-  "policy": "Edits are limited to import paths and to replacing build-host constants with configuration lookups. Any change that could move a pixel requires a RECIPE_VERSION bump, which invalidates every product on disk.",
-  "files": {}
+  "why": "These kernels decide the PIXELS of a texture that has already shipped in a dataset, so a reimplementation would produce a different atlas for the same object. They are carried from the campaign that produced the shipped textures and are excluded from linting (ADR 0002).",
+  "policy": "Edits are limited to import paths and to replacing build-host constants with configuration lookups. Any change that could move a pixel requires a RECIPE_VERSION bump AND moves recipe_digest, which invalidates every product on disk; the delivered-bytes digest catches a product that was not in fact regenerated.",
+  "files": {
+    "atlas_ops.py": {
+      "source": "tools/texgen_campaign_v1.py",
+      "source_repo": "internal TopoTex tree (not public)",
+      "source_lines": "196-232",
+      "functions": [
+        "apply_margin",
+        "dilate_full",
+        "resize_lanczos"
+      ],
+      "carried": "functionally equivalent, verified numerically; see 'fidelity'"
+    }
+  },
+  "fidelity": "FUNCTIONALLY EQUIVALENT, VERIFIED -- not textually verbatim. apply_margin and dilate_full were restructured (apply_margin fills the ring before blacking out the far background rather than after; dilate_full adds an all-valid early return and gathers only over the invalid region). Equivalence was checked numerically rather than asserted: 0 mismatches over 40 randomised multi-island masks at 64/128/512 px per kernel, plus the all-valid edge case. Byte and AST equality with the originals are both false, and any claim of verbatim carriage would be wrong."
 }

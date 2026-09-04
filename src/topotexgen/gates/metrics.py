@@ -5,6 +5,12 @@ Separating measurement from judgement buys three things: every measure can be
 unit-tested on synthetic input, a stored measurement row can be re-judged
 after a re-calibration without re-rendering, and a report can show the number
 next to the threshold that acted on it.
+
+Every measure returns its numbers under the ``g<n>_`` names the verdict layer
+reads, so the field contract is minted in exactly one place. It used to be
+minted twice — the measures returned ``dark_frac`` while the verdict read
+``g1_dark_frac`` — and because the verdict reads with ``.get()``, all but two
+of those mismatches would have been absorbed in silence.
 """
 from __future__ import annotations
 
@@ -30,7 +36,7 @@ def dark_coverage(texture: np.ndarray, valid_mask: np.ndarray,
     rgb = _as_rgb(texture)
     vm = np.asarray(valid_mask) > 0
     if not vm.any():
-        return {"dark_frac": 0.0, "max_blob": 0.0, "valid_texels": 0}
+        return {"g1_dark_frac": 0.0, "g1_max_blob": 0.0, "g1_valid_texels": 0}
     dark = rgb.max(-1) < luma_max
     dark_valid = dark & vm
     frac = float(dark_valid.sum() / vm.sum())
@@ -41,19 +47,19 @@ def dark_coverage(texture: np.ndarray, valid_mask: np.ndarray,
         if n:
             sizes = np.bincount(lab.ravel())[1:]
             blob = float(sizes.max() / max(dark_valid.sum(), 1))
-    return {"dark_frac": round(frac, 4), "max_blob": round(blob, 3),
-            "valid_texels": int(vm.sum())}
+    return {"g1_dark_frac": round(frac, 4), "g1_max_blob": round(blob, 3),
+            "g1_valid_texels": int(vm.sum())}
 
 
 def reference_dark_fraction(reference: np.ndarray, *, luma_max: int = 60,
                             background_delta: int = 40,
-                            foreground_min_px: int = 500) -> float | None:
+                            foreground_min_px: int = 500) -> dict:
     """The witness for G1: how dark is the SOURCE image's subject?
 
     The reference is generated on a plain light background, so the subject is
-    whatever differs from the corner colour. Returns None when the subject
-    cannot be isolated — the caller then applies the strict rule rather than
-    guessing.
+    whatever differs from the corner colour. ``g1_ref_dark`` is None when the
+    subject cannot be isolated — the verdict layer then applies the strict rule
+    rather than guessing.
     """
     ref = _as_rgb(reference).astype(int)
     h, w = ref.shape[:2]
@@ -62,8 +68,9 @@ def reference_dark_fraction(reference: np.ndarray, *, luma_max: int = 60,
     background = np.median(corners.reshape(-1, 3), axis=0)
     foreground = np.abs(ref - background).max(-1) > background_delta
     if foreground.sum() < foreground_min_px:
-        return None
-    return round(float((ref[foreground].max(-1) < luma_max).mean()), 4)
+        return {"g1_ref_dark": None, "g1_ref_foreground_px": int(foreground.sum())}
+    return {"g1_ref_dark": round(float((ref[foreground].max(-1) < luma_max).mean()), 4),
+            "g1_ref_foreground_px": int(foreground.sum())}
 
 
 # ------------------------------------------------------- G8: atlas vs views
@@ -119,9 +126,9 @@ def atlas_view_agreement(rendered, reference_views, *, masks=None) -> dict:
                for r, g, m in zip(rendered, reference_views, ms, strict=True)]
     med, n_used = _median(direct)
     med_f, _ = _median(flipped)
-    return {"psnr_median": med, "psnr_flip_median": med_f,
-            "views": len(rendered), "views_measured": n_used,
-            "exact_views": int(sum(1 for v in direct if np.isinf(v)))}
+    return {"g8_psnr": med, "g8_psnr_flip": med_f,
+            "g8_views": len(rendered), "g8_views_measured": n_used,
+            "g8_exact_views": int(sum(1 for v in direct if np.isinf(v)))}
 
 
 # ------------------------------------------------------------- G4: framing
@@ -136,6 +143,27 @@ def silhouette_iou(alpha_a: np.ndarray, alpha_b: np.ndarray,
     return round(float((a & b).sum() / union), 4)
 
 
+def framing(rendered_alphas, raster_alphas, *, original_alphas=None,
+            threshold: int = 128) -> dict:
+    """G4: the worst silhouette IoU over the views, and the same number for the
+    object's ORIGINAL views when they are available.
+
+    Both are needed because the verdict is relative: a thin or forced-opaque
+    object has a low IoU in its original views too, and that tail is not the
+    new texture's doing.
+    """
+    def _worst(pairs):
+        vals = [silhouette_iou(a, b, threshold) for a, b in pairs]
+        usable = [v for v in vals if not np.isnan(v)]
+        return round(float(min(usable)), 4) if usable else None
+
+    out = {"g4_iou_min": _worst(zip(rendered_alphas, raster_alphas, strict=True)),
+           "g4_views": len(rendered_alphas)}
+    out["g4_iou_orig"] = (None if original_alphas is None else
+                          _worst(zip(original_alphas, raster_alphas, strict=True)))
+    return out
+
+
 # ----------------------------------------------------- G6: family agreement
 def cross_family_disagreement(colours_by_family: dict[str, np.ndarray],
                               *, tolerance: int = 2) -> dict:
@@ -148,30 +176,21 @@ def cross_family_disagreement(colours_by_family: dict[str, np.ndarray],
     """
     fams = sorted(colours_by_family)
     if len(fams) < 2:
-        return {"bad_fraction": 0.0, "points": 0, "families": len(fams)}
+        return {"g6_bad_fraction": 0.0, "g6_points": 0, "g6_families": len(fams)}
     stack = np.stack([np.asarray(colours_by_family[f]).astype(int) for f in fams])
     spread = stack.max(0) - stack.min(0)
     bad = (spread > tolerance).any(-1)
-    return {"bad_fraction": round(float(bad.mean()), 6), "points": int(bad.size),
-            "families": len(fams)}
+    return {"g6_bad_fraction": round(float(bad.mean()), 6), "g6_points": int(bad.size),
+            "g6_families": len(fams)}
 
 
 # --------------------------------------------------------- G7: margin ring
-def margin_ring_difference(produced: np.ndarray, expected: np.ndarray,
-                           ring_mask: np.ndarray) -> float:
-    """G7: mean absolute difference inside the dilated ring around UV islands.
-
-    The ring is what a sampler reads when a texel falls just outside an island,
-    so it has to follow the same convention the rest of the dataset was baked
-    with or seams appear.
-    """
-    r = np.asarray(ring_mask) > 0
-    if not r.any():
-        return 0.0
-    p = _as_rgb(produced).astype(np.float64)[r]
-    e = _as_rgb(expected).astype(np.float64)[r]
-    return round(float(np.abs(p - e).mean()), 4)
-
+# The ring check lives with the kernel that produces the ring, in
+# stages.assetize.ring_consistency: it is a self-check on the delivered image
+# (every ring texel equals its nearest valid texel; the far background is
+# black), not a comparison against a second array. The comparison form that
+# used to live here was handed the produced texture as its own "expected"
+# reference, so it returned 0.0 for every possible input.
 
 # ------------------------------------------------------- G3: albedo ratio
 def albedo_ratio(rendered_luma: float, visible_albedo_luma: float) -> dict:
@@ -182,5 +201,6 @@ def albedo_ratio(rendered_luma: float, visible_albedo_luma: float) -> dict:
     ambient floor, which is why only the low side gates.
     """
     if not visible_albedo_luma:
-        return {"ratio": None, "note": "no visible albedo"}
-    return {"ratio": round(float(rendered_luma / visible_albedo_luma), 4), "note": ""}
+        return {"g3_ratio": None, "g3_note": "no visible albedo"}
+    return {"g3_ratio": round(float(rendered_luma / visible_albedo_luma), 4),
+            "g3_note": ""}

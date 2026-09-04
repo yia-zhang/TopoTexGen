@@ -67,6 +67,39 @@ class WorkQueue:
         except (OSError, ValueError):
             return None
 
+    def completed_extra(self, uid: str) -> dict | None:
+        """Everything else the completing stage recorded.
+
+        A stage writes what its product was derived FROM (input digests, the
+        keys in force) and the next stage reads it back. Without this the only
+        question a downstream stage can ask is "does a file exist", which is
+        how a stale product gets re-certified under a fresh key.
+        """
+        p = self._done_path(uid)
+        if not p.exists():
+            return None
+        try:
+            rec = json.loads(p.read_text())
+        except (OSError, ValueError):
+            return None
+        return {k: v for k, v in rec.items()
+                if k not in ("uid", "key", "owner", "at")}
+
+    def completed_mtime(self, uid: str) -> float | None:
+        """When the completion marker was written.
+
+        Two stat calls answer "is this product older than its input?" for a
+        whole population; digesting every input to ask the same question means
+        re-reading every atlas on every invocation. So the mtime relation is
+        the cheap detector and a digest is the accurate decider -- which is the
+        structure the original campaign used, and the reason it used mtimes at
+        all.
+        """
+        try:
+            return self._done_path(uid).stat().st_mtime
+        except OSError:
+            return None
+
     def is_done(self, uid: str, key: str) -> bool:
         """Done means: a product exists AND it is bound to this exact key."""
         return self.completed_key(uid) == key

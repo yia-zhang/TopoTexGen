@@ -87,17 +87,54 @@ against `configs/gates.yaml`. Measurement and judgement are separate functions
 so a verdict can be replayed after a re-calibration without re-rendering. See
 the [gate specification](gate-spec.md).
 
-### commit
+### measure
 
-Writes accepted textures into the dataset under its errata protocol: back up,
-write to staging, atomic replace, restore permissions, record the contract in
-the object's metadata, append to a ledger, read back and verify. Never in
-place, never without a backup, never without a record.
+Turns each staged object into one measurement row. It measures what it has and
+**names what it cannot measure, with the reason**, in `unmeasured` and
+`unmeasured_because`: four gates need re-rendered views and one needs a UV
+rasteriser, and neither is part of this package. Supply the renderer's numbers
+as `staging/<uid>/render.json` and they are folded into the row.
+
+The verdict layer fails an unmeasured gate rather than passing it, so a run
+without a renderer reports `FAIL:G8_MISSING` — not a clean bill of health.
+
+### commit — NOT IMPLEMENTED HERE
+
+The campaign wrote accepted textures into the dataset under an errata
+protocol: back up, write to staging, atomic replace, restore permissions,
+record the contract in the object's metadata, append to a ledger, read back
+and verify. Never in place, never without a backup, never without a record.
+
+**That half is deliberately not in this package**, for the same reason the
+model workers are not: it writes to a specific frozen dataset with a specific
+on-disk contract. What is public is the part that decides *whether* a texture
+should be written. The protocol itself is documented in the dataset
+repository.
 
 ## Keys, and why nothing is cached by existence
 
-Every product is bound to `texture_key(caption, attempt, recipe)`. A product
-whose key does not match the current inputs is a cache **miss**.
+Products are bound to two keys and one digest, because they answer three
+different questions:
+
+* `texture_key(caption, attempt, recipe)` — the **generation** key. The recipe
+  contributes the *values* that decide the atlas (model, steps, suffix, atlas
+  resolution, UV convention), digested, not a version label: a label is
+  hand-maintained, so editing `atlas_resolution` while leaving the label alone
+  would leave every product claiming inputs it does not have.
+* `delivery_key(generation_key, recipe)` — the **delivery** key, adding
+  `texture_resolution` and `margin_px`. Separate so that editing a margin
+  re-delivers from the existing atlas instead of discarding the GPU time that
+  produced it.
+* `AssetizeResult.digest` — a digest over the delivered **bytes**. A key can be
+  re-stamped onto a stale product; a digest of the product cannot.
+
+A product whose key does not match the current inputs is a cache **miss**.
+
+And a key alone is not provenance: the atlas sits at a path that carries no
+key, so `assetize` asks the `generate` queue whether *that* stage completed at
+the current key before it consumes the file. Without that question, editing a
+caption re-delivers the old caption's pixels and stamps the new key onto
+them — the same "cached by existence" failure, one stage further down.
 
 This is not hygiene, it is the fix for a specific class of bug: a product
 cached by existence survives a change of caption, seed or recipe and then

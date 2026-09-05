@@ -34,7 +34,11 @@ WORKERS = Path(__file__).resolve().parent / "workers"
 
 
 def _run(a) -> Run:
-    return Run(RunConfig.load(a.config))
+    cfg = RunConfig.load(a.config)
+    work = getattr(a, "work", None)
+    if work:                      # `texture` puts the run beside its output
+        cfg.paths.work = Path(work)
+    return Run(cfg)
 
 
 def _digest_bytes(*paths: Path) -> str:
@@ -285,6 +289,78 @@ def cmd_gate(a) -> int:
     return 0
 
 
+#: the whole loop, in order, for one object
+_LOOP = ("prepare", "caption", "reference", "generate", "assetize", "measure", "gate")
+
+
+def cmd_texture(a) -> int:
+    """One mesh in, one texture out. The whole loop, in order, on one object.
+
+    Everything this runs is the same code the per-stage commands run -- the
+    queue, the keys, the gates are all still underneath. They are just not the
+    interface: texturing one mesh should not require knowing that a run has a
+    population, or that products are claimed from a work queue.
+    """
+    import argparse
+    import shutil
+
+    cfg_path = a.config or ("run.yaml" if Path("run.yaml").exists() else None)
+    if not cfg_path:
+        raise SystemExit(
+            "no run configuration. The three model stages each need their own "
+            "interpreter and the generator needs a checkout, so those cannot "
+            "be guessed.\n\n"
+            "  cp configs/run.single.yaml run.yaml    # then fill in four paths\n\n"
+            "See docs/operations/models.md for what to install and download.")
+
+    out = Path(a.out or (Path(a.mesh).with_suffix("") .name + "_texture.png"))
+    work = Path(a.work) if a.work else out.resolve().parent / f".{out.stem}.topotexgen"
+    common = {"config": str(cfg_path), "work": str(work)}
+
+    def _ns(**kw):
+        return argparse.Namespace(**common, **kw)
+
+    steps = {
+        "prepare":   (cmd_prepare,   _ns(mesh=[a.mesh])),
+        "caption":   (cmd_caption,   _ns()),
+        "reference": (cmd_reference, _ns(batch=0)),
+        "generate":  (cmd_generate,  _ns()),
+        "assetize":  (cmd_assetize,  _ns(limit=0)),
+        "measure":   (cmd_measure,   _ns()),
+        "gate":      (cmd_gate,      _ns(gates_config=a.gates_config)),
+    }
+    for name in _LOOP:
+        fn, ns = steps[name]
+        print(f"\n[{name}]", flush=True)
+        try:
+            rc = fn(ns)
+        except SystemExit as e:
+            # a stage refusing to run says why, but not which stage it was --
+            # and in a seven-step loop that is the first thing you want to know
+            raise SystemExit(f"`{name}` could not run:\n\n{e}") from None
+        if rc != 0:
+            raise SystemExit(
+                f"\nstopped at `{name}` (exit {rc}). Nothing after it ran, "
+                f"and "
+                f"nothing outside {work} was written. The stage printed what it "
+                f"could not do; {work}/logs holds the workers' own output.")
+
+    r = _run(_ns())                       # the same config, and the same work dir
+    uid = r.population()[0] if (work / "population.json").exists() else None
+    staged = work / "staging" / (uid or "") / "texture.png"
+    if not staged.exists():
+        raise SystemExit(f"the loop finished but no texture was staged at {staged}")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(staged, out)
+
+    verdicts = work / "gates" / "verdicts.jsonl"
+    row = json.loads(verdicts.read_text().splitlines()[0]) if verdicts.exists() else {}
+    print(json.dumps({"texture": str(out), "uid": uid,
+                      "verdict": row.get("verdict"), "reasons": row.get("reasons"),
+                      "measured": row.get("logged"), "run": str(work)}, indent=1))
+    return 0 if row.get("verdict") == "PASS" else 2
+
+
 def cmd_status(a) -> int:
     print(json.dumps({**VERSIONS, **_run(a).status()}, indent=1))
     return 0
@@ -292,8 +368,16 @@ def cmd_status(a) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="topotexgen", description=__doc__.split("\n")[0])
-    p.add_argument("--config", required=True, help="run configuration (YAML)")
+    p.add_argument("--config", help="run configuration (YAML); "
+                                    "`texture` falls back to ./run.yaml")
     sub = p.add_subparsers(dest="cmd", required=True)
+
+    q = sub.add_parser("texture", help="one mesh in, one texture out (the whole loop)")
+    q.add_argument("mesh", help=".obj / .glb to texture")
+    q.add_argument("-o", "--out", help="where to write the texture (PNG)")
+    q.add_argument("--work", help="run directory (default: beside the output)")
+    q.add_argument("--gates-config")
+    q.set_defaults(fn=cmd_texture)
 
     q = sub.add_parser("select", help="freeze the work set")
     q.add_argument("--population", required=True, help="json list (or {uids: [...]})")

@@ -1,0 +1,30 @@
+# Texturing ONE mesh. Four paths; everything else has a working default.
+#
+#   topotexgen texture chair.obj -o chair.png
+#
+# The three model stages each need their own interpreter, because their pins
+# genuinely conflict (see docs/operations/environments.md), and the generator
+# is a source checkout rather than a package. Those four facts are what this
+# file exists to record. Nothing here is guessed for you: a missing path fails
+# at startup with its own name.
+
+paths:
+  # a checkout of the texture generator (UniTEX). Not a pip package.
+  generator_root: /path/to/UniTEX
+
+interpreters:
+  caption: /path/to/envs/caption/bin/python      # transformers, torch
+  reference: /path/to/envs/reference/bin/python  # diffusers, torch
+  generate: /path/to/envs/generate/bin/python    # the generator's own env
+
+# Everything below is optional. The defaults are the ones that were measured;
+# see docs/operations/throughput.md before changing them.
+#
+# recipe:
+#   texture_resolution: 256    # the delivered texture
+#   margin_px: 4               # nearest-texel ring around each UV island
+#   atlas_resolution: 2048     # what the generator paints into
+#
+# runtime:
+#   gpus: 1
+#   gpu_memory_gb: 36          # free memory a worker waits for before loading

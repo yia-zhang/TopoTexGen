@@ -419,3 +419,85 @@ def test_a_FLIPPED_ATLAS_FAILS_THE_GATE(g8_run, capsys):
     summary = json.loads(capsys.readouterr().out)
     assert summary["pass"] == 0
     assert "FAIL:G8_VIEW_MISMATCH" in summary["by_verdict"], summary["by_verdict"]
+
+
+# ------------------------------------------------------------ the one command
+def test_texture_needs_no_config_flag_and_says_what_to_create(tmp_path, monkeypatch):
+    """Texturing a mesh should not begin with reading the CLI reference."""
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(SystemExit) as e:
+        main(["texture", "chair.obj"])
+    msg = str(e.value)
+    assert "run.single.yaml" in msg          # names the file to copy
+    assert "interpreter" in msg              # and why it cannot be guessed
+
+
+def test_texture_names_the_stage_that_stopped_it(tmp_path):
+    """In a seven-step loop, "which step" is the first thing you want to know."""
+    cfg = tmp_path / "run.yaml"
+    cfg.write_text("paths: {}\ninterpreters: {}\n")
+    m = tmp_path / "quad.obj"
+    m.write_text("v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\n"
+                 "vt 0 0\nvt 1 0\nvt 1 1\nvt 0 1\n"
+                 "f 1/1 2/2 3/3\nf 1/1 3/3 4/4\n")
+    with pytest.raises(SystemExit) as e:
+        main(["--config", str(cfg), "texture", str(m),
+              "-o", str(tmp_path / "out.png")])
+    msg = str(e.value)
+    assert "`caption`" in msg, msg          # prepare succeeded, caption is next
+    assert "own environment" in msg          # and the stage's own reason survives
+
+
+def test_texture_runs_the_deterministic_half_and_writes_the_texture(tmp_path,
+                                                                    monkeypatch):
+    """With the model stages standing in, the command produces a texture file
+    and a verdict -- which is the whole interface for one mesh."""
+    import topotexgen.cli as C
+
+    cfg = tmp_path / "run.yaml"
+    cfg.write_text("paths: {}\ninterpreters: {}\n"
+                   "recipe:\n  texture_resolution: 64\n  margin_px: 4\n")
+    m = tmp_path / "quad.obj"
+    m.write_text("v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\n"
+                 "vt 0 0\nvt 1 0\nvt 1 1\nvt 0 1\n"
+                 "f 1/1 2/2 3/3\nf 1/1 3/3 4/4\n")
+    out = tmp_path / "quad_texture.png"
+    work = tmp_path / "run"
+
+    def fake_caption(a):
+        r = Run(RunConfig.load(a.config))
+        r.cfg.paths.work = work
+        (work / "captions.jsonl").write_text(
+            "\n".join(json.dumps({"uid": u, "caption": "a wooden panel"})
+                      for u in r.population()) + "\n")
+        return 0
+
+    def fake_reference(a):
+        return 0
+
+    def fake_generate(a):
+        r = Run(RunConfig.load(a.config))
+        r.cfg.paths.work = work
+        for uid in r.population():
+            d = work / "atlas" / uid
+            d.mkdir(parents=True, exist_ok=True)
+            atlas = np.zeros((128, 128, 3), np.uint8)
+            vm = np.zeros((128, 128), bool)
+            vm[10:120, 10:120] = True
+            atlas[vm] = (180, 140, 90)
+            Image.fromarray(atlas).save(d / "atlas.png")
+            Image.fromarray((vm * 255).astype(np.uint8)).save(d / "valid.png")
+            r.queue("generate", owner="test").complete(uid, r.key_of(uid))
+        return 0
+
+    monkeypatch.setattr(C, "cmd_caption", fake_caption)
+    monkeypatch.setattr(C, "cmd_reference", fake_reference)
+    monkeypatch.setattr(C, "cmd_generate", fake_generate)
+
+    # the gate fails without a renderer's numbers, which is correct and is not
+    # what this test is about: it is about the command producing the artefact
+    rc = main(["--config", str(cfg), "texture", str(m), "-o", str(out),
+               "--work", str(work)])
+    assert rc in (0, 2), rc
+    assert out.exists() and out.stat().st_size > 0
+    assert np.asarray(Image.open(out)).shape == (64, 64, 3)

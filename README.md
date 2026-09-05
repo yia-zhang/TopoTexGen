@@ -1,21 +1,68 @@
 # TopoTexGen
 
-**Texture regeneration for 3D assets.** Give it objects whose textures are
-unusable — flat colour, missing, corrupted — and it produces new ones that fit
-the object's existing geometry and UV layout, then decides which of them are
-good enough to keep.
+**A texture for a mesh that has none.** Hand it an `.obj` or `.glb`, get back a
+texture that fits the object — and a verdict on whether the texture is any
+good.
+
+```bash
+topotexgen texture chair.obj -o chair.png
+```
+
+That is the whole interface for one object. It unwraps the mesh if it has no
+UVs, works out what the object is, generates a texture for it, delivers it at
+the resolution you asked for, and then measures the result and tells you
+whether it passed.
+
+## What it costs to set up
+
+Three models and a generator checkout, none of them shipped here, and they are
+the reason this is not a `pip install` away:
 
 | | |
 |---|---|
-| Pipeline | `select → caption → reference → generate → assetize → measure → gate` |
-| Decides what ships | eight measured properties, seven of them gated; thresholds and calibration in [`configs/gates.yaml`](configs/gates.yaml) |
-| Runs without a GPU | `select`, `assetize`, `measure`, `gate`, `status` — and the whole test suite |
-| Same object, same result | every product keyed by caption + attempt + the recipe VALUES that decide its pixels |
+| weights | **≈ 50 GiB**, four models, **two of them gated** — see [models and weights](docs/operations/models.md) |
+| environments | **three**, one per model stage. Their dependency pins genuinely conflict, [measured](docs/operations/environments.md) |
+| generator | a source **checkout** (UniTEX, Apache-2.0), not a package; some of its dependencies compile |
+| GPU | required for the three model stages; everything else runs anywhere |
 
-The point of the design is the last two rows. The expensive part of texture
-regeneration is not generating a texture, it is knowing which generated
-textures are wrong — and being able to redo exactly those, months later,
-without redoing anything else.
+Setup is a one-time cost and it is real. Once it is paid, texturing an object
+is one command.
+
+```bash
+pip install -e ".[dev,mesh]"             # this package
+cp configs/run.single.yaml run.yaml      # then fill in four paths
+topotexgen texture chair.obj -o chair.png
+```
+
+## What it tells you
+
+A texture that looks plausible can still be wrong, so the result comes with
+measurements rather than just pixels:
+
+```
+{ "texture": "chair.png",
+  "verdict": "PASS",
+  "measured": { "g1_dark_frac": 0.004, "g8_psnr": 24.6, "g8_psnr_flip": 11.2 } }
+```
+
+The one worth understanding is **G8**. Every other check is derived from the
+generated atlas, so all of them agree with each other even when the atlas is
+mirrored — which is exactly how a vertical flip once shipped on 2,186 objects
+after passing an eight-of-eight review. G8 compares against the generator's own
+views, which are not derived from the atlas, and it is the only check that can
+see that class of error.
+
+**What no check catches is the caption.** If the model decides your radish is a
+bird, everything downstream renders a beautiful bird and every gate agrees.
+Measured rate and where it fails: [pipeline
+specification](docs/specifications/pipeline-spec.md#how-often-it-is-right-and-where-it-is-wrong).
+
+## Doing more than one
+
+The single-object command runs the same stages the batch interface does, in
+order, on one object. For a population there is a stage-at-a-time interface
+with a work queue, resumable stages, and products keyed to the inputs that
+produced them, so re-rolling one object does not redo any other.
 
 ## What it does, stage by stage
 

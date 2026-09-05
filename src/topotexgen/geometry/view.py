@@ -52,19 +52,67 @@ ORTHO_HALF = 1.0
 BOX_EXTENT = 0.95
 
 
-def normalize_to_box(vertices, extent: float = BOX_EXTENT) -> np.ndarray:
-    """Centre the mesh and scale its LONGEST extent to +/- ``extent``.
+def ortho_camera(azimuth_deg: float, elevation_deg: float,
+                 radius: float = RADIUS) -> np.ndarray:
+    """A camera-to-world matrix for an orthographic view of the origin.
 
-    The generator's rig assumes it, and getting the scale wrong does not
-    produce an error -- it produces a smaller or clipped silhouette that scores
-    badly against every view, which reads as "the texture is wrong".
+    Azimuth 0 puts the camera on +Z (the rig's "front") and increases towards
+    +X ("right"); elevation lifts it towards +Y. Consistent with ``BOX_VIEWS``
+    by construction, and a test pins that: ``ortho_camera(0, 0)`` is the front
+    view and ``ortho_camera(90, 0)`` is the right one.
+    """
+    az, el = np.radians(azimuth_deg), np.radians(elevation_deg)
+    pos = np.array([radius * np.cos(el) * np.sin(az),
+                    radius * np.sin(el),
+                    radius * np.cos(el) * np.cos(az)])
+    zc = pos / np.linalg.norm(pos)                 # towards the viewer
+    up = np.array([0.0, 1.0, 0.0])
+    if abs(float(zc @ up)) > 0.999:                # looking straight down or up
+        up = np.array([0.0, 0.0, 1.0])
+    xc = np.cross(up, zc)
+    xc /= np.linalg.norm(xc)
+    yc = np.cross(zc, xc)
+    c2w = np.eye(4)
+    c2w[:3, 0], c2w[:3, 1], c2w[:3, 2], c2w[:3, 3] = xc, yc, zc, pos
+    return c2w
+
+
+#: Where the captioner is shown the object from. Three-quarter, and lifted,
+#: because the axis views are the ambiguous ones: a vehicle seen dead-on front
+#: and dead-on side is a rectangle, and a root vegetable seen the same way is
+#: an ellipse. The frozen render protocol draws its condition views from
+#: azimuth sectors centred on 45/135/225/315 with elevation in [-8, 25] for
+#: exactly this reason, and those are the views its captioner was shown.
+SHAPE_VIEW_ANGLES = ((45.0, 20.0), (135.0, 20.0))
+
+
+def normalize_to_box(vertices, extent: float = BOX_EXTENT,
+                     fit: str = "box") -> np.ndarray:
+    """Centre the mesh and scale it to fit ``+/- extent``.
+
+    ``fit="box"`` scales the longest AXIS extent, which is what the generator's
+    rig assumes -- so G8 must use it, and getting it wrong does not raise, it
+    produces a silhouette that scores badly against every view and reads as
+    "the texture is wrong".
+
+    ``fit="sphere"`` scales the bounding-sphere radius instead, which is
+    view-independent. The axis fit is only safe from the axis views: a cube
+    normalised to +/-0.95 per axis is 0.95*sqrt(2) = 1.34 wide seen corner-on,
+    and the frame is 1.0, so it is clipped. Anything rendered from an angle the
+    rig did not define -- the captioner's three-quarter views -- needs this one.
     """
     v = np.asarray(vertices, np.float64)
     lo, hi = v.min(0), v.max(0)
-    span = (hi - lo).max()
+    centre = (lo + hi) / 2.0
+    if fit == "sphere":
+        span = 2.0 * np.linalg.norm(v - centre, axis=1).max()
+    elif fit == "box":
+        span = (hi - lo).max()
+    else:
+        raise ValueError(f"fit must be 'box' or 'sphere', got {fit!r}")
     if span <= 0:
         raise ValueError("mesh has zero extent")
-    return (v - (lo + hi) / 2.0) / (span / (2.0 * extent))
+    return (v - centre) / (span / (2.0 * extent))
 
 
 def _rasterize(mesh: Mesh, c2w, res: int, faces_keep=None):
@@ -177,6 +225,11 @@ def render_ortho(mesh: Mesh, texture, c2w, res: int = 512,
     return rgb, alpha
 
 
+#: key light in CAMERA space: up, to the left, and in front of the subject
+_KEY_DIR = np.array([-0.4, 0.55, 0.73])
+_KEY_DIR = _KEY_DIR / np.linalg.norm(_KEY_DIR)
+
+
 def render_shape(mesh: Mesh, c2w, res: int = 512, faces_keep=None,
                  base: int = 235, ambient: float = 0.18) -> tuple[np.ndarray, np.ndarray]:
     """One view of the UNTEXTURED surface, shaded so its shape is readable.
@@ -205,26 +258,41 @@ def render_shape(mesh: Mesh, c2w, res: int = 512, faces_keep=None,
     # the camera's +Z axis points back towards the viewer, so a face turned
     # towards it has a positive dot product; an inward-facing shell gets the
     # same treatment via the absolute value rather than going black
-    lam = np.abs(n @ frag["c2w"][:3, 2])
-    shade = np.clip(ambient + (1.0 - ambient) * lam, 0.0, 1.0)
+    # A headlight alone (n . towards-viewer) gives every surface facing the
+    # camera the same value, so concave structure disappears and the object
+    # reads as a silhouette. An off-axis key separates surfaces that face
+    # different ways, which is what makes the shape legible.
+    cam = frag["c2w"][:3, :3]
+    head = np.abs(n @ cam[:, 2])
+    key = np.clip(n @ (cam @ _KEY_DIR), 0.0, None)
+    shade = np.clip(ambient + 0.45 * head + 0.37 * key, 0.0, 1.0)
     grey = (shade * base).round().astype(np.uint8)
     rgb.reshape(-1, 3)[frag["pix"]] = grey[:, None]
     alpha.reshape(-1)[frag["pix"]] = True
     return rgb, alpha
 
 
-def render_shape_views(mesh: Mesh, res: int = 512, views=(0, 1),
+def render_shape_views(mesh: Mesh, res: int = 512, angles=SHAPE_VIEW_ANGLES,
                        faces_keep=None) -> list[tuple[np.ndarray, np.ndarray]]:
-    """Untextured views for the captioner, from the box rig.
+    """Untextured views for the captioner, from three-quarter angles.
 
-    Two by default -- front and right -- which is what the campaign showed its
-    captioner. A third view rarely changes the answer and costs a token budget
-    the prompt does not have.
+    NOT the box rig's axis views. This used to render front and right, on the
+    stated grounds that they were "what the campaign showed its captioner" --
+    which was wrong: the campaign showed two of the object's condition views,
+    and those are drawn from azimuth sectors centred on 45/135/225/315. An
+    axis-aligned pair is the ambiguous case, and it showed: on the first five
+    objects captioned through this path, a pickup truck came back as a tractor
+    and a radish as a bird. Both are fair readings of those silhouettes.
+
+    Two views. A third rarely changes the answer and costs a token budget the
+    prompt does not have.
     """
-    m = Mesh(vertices=normalize_to_box(mesh.vertices), faces=mesh.faces,
+    # sphere fit: these angles are not the rig's, so the axis fit would clip
+    m = Mesh(vertices=normalize_to_box(mesh.vertices, fit="sphere"),
+             faces=mesh.faces,
              uv_vertices=mesh.uv_vertices, uv_faces=mesh.uv_faces)
-    return [render_shape(m, BOX_VIEWS[i], res=res, faces_keep=faces_keep)
-            for i in views]
+    return [render_shape(m, ortho_camera(az, el), res=res, faces_keep=faces_keep)
+            for az, el in angles]
 
 
 def render_box_views(mesh: Mesh, texture, res: int = 512,

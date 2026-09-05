@@ -171,3 +171,69 @@ def test_rendering_without_uvs_refuses():
     m = Mesh(vertices=_V.copy(), faces=_F.copy())
     with pytest.raises(ValueError, match="UV layout"):
         render_ortho(m, _asymmetric_texture(), BOX_VIEWS[0])
+
+
+# ------------------------------------------------- the views the captioner sees
+def test_an_arbitrary_camera_agrees_with_the_rig_it_extends():
+    """`ortho_camera` and `BOX_VIEWS` must be the same rig, or a view angle
+    means one thing to the captioner and another to G8."""
+    from topotexgen.geometry.view import ortho_camera
+    assert np.allclose(ortho_camera(0, 0), BOX_VIEWS[0], atol=1e-9)    # front +Z
+    assert np.allclose(ortho_camera(90, 0), BOX_VIEWS[1], atol=1e-9)   # right +X
+    # at the poles the up vector is degenerate, so the roll about the view axis
+    # is free: the direction still agrees, the framing is rotated
+    assert np.allclose(ortho_camera(0, 90)[:3, 2], BOX_VIEWS[2][:3, 2], atol=1e-9)
+
+
+def test_the_captioner_is_shown_three_quarter_views_not_axis_views():
+    """The axis views are the ambiguous ones.
+
+    A vehicle seen dead-on front and dead-on side is a rectangle; a root
+    vegetable seen the same way is an ellipse. Rendering front+right was a real
+    defect: on the first five objects captioned through this path, a pickup
+    truck came back as a tractor and a radish as a bird, and both are fair
+    readings of those silhouettes. The frozen render protocol draws its
+    condition views from sectors centred on 45/135/225/315 for the same reason.
+    """
+    from topotexgen.geometry.view import SHAPE_VIEW_ANGLES
+    assert len(SHAPE_VIEW_ANGLES) == 2
+    for az, el in SHAPE_VIEW_ANGLES:
+        assert az % 90 != 0, f"azimuth {az} is an axis view"
+        assert 0 < el < 45, f"elevation {el} is neither level nor a plan view"
+
+
+def test_the_shape_views_show_the_object_whole_and_differ_from_each_other():
+    """A cube is the case that catches the fit: normalised per AXIS it is
+    0.95*sqrt(2) wide seen corner-on and the frame is 1.0, so a three-quarter
+    view clips it. The captioner cannot identify what it cannot see whole."""
+    from topotexgen.geometry.view import render_shape_views
+    views = render_shape_views(_box_mesh(), res=96)
+    assert len(views) == 2
+    for rgb, alpha in views:
+        assert alpha.any()
+        # nothing touches a border: the sphere fit is what guarantees this from
+        # an angle the rig never defined
+        assert not (alpha[0].any() or alpha[-1].any()
+                    or alpha[:, 0].any() or alpha[:, -1].any()), "clipped"
+        assert len(np.unique(rgb[alpha][:, 0])) >= 3, "the object renders flat"
+
+    # a cube is four-fold symmetric about the vertical axis, so its two
+    # three-quarter views are identical by construction -- the assertion that
+    # the views differ is only meaningful on something asymmetric
+    lopsided = _box_mesh()
+    lopsided.vertices = lopsided.vertices.copy()
+    lopsided.vertices[6] += (0.9, 0.4, 0.0)
+    a, b = render_shape_views(lopsided, res=96)
+    assert not np.array_equal(a[0], b[0]), "the two view angles see the same thing"
+
+
+def test_the_key_light_separates_surfaces_a_headlight_flattens():
+    """A headlight alone gives every camera-facing surface the same value, so
+    concave structure vanishes and the object reads as a silhouette."""
+    from topotexgen.geometry.view import ortho_camera, render_shape
+    mesh = _box_mesh()
+    normalised = Mesh(vertices=normalize_to_box(mesh.vertices), faces=mesh.faces,
+                      uv_vertices=mesh.uv_vertices, uv_faces=mesh.uv_faces)
+    rgb, alpha = render_shape(normalised, ortho_camera(45, 20), res=96)
+    shades = np.unique(rgb[alpha][:, 0])
+    assert len(shades) >= 3, f"only {len(shades)} distinct shades: the object is flat"

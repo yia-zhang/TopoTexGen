@@ -142,3 +142,47 @@ def test_views_for_the_captioner_are_rendered(tmp_path):
     fg = a[..., 3] > 127
     assert fg.any(), "the shape view is empty"
     assert a[..., :3][fg].max() > 50, "the shape view is black"
+
+
+def test_nothing_non_contiguous_is_handed_to_safetensors(tmp_path, monkeypatch):
+    """safetensors requires contiguous, dense tensors — and does not check.
+
+    From 0.8 it serialises the raw buffer, so a transposed VIEW is written in
+    memory order and read back under the declared [3, H, W] shape: the bytes
+    are reinterpreted along the wrong axis and barycentrics that sum to 1 come
+    back summing to 0.61. No error, no warning. safetensors 0.7 copied into C
+    order and hid it, so a suite green on 0.7 proves nothing — which is why
+    this test inspects what is HANDED to the library rather than what comes
+    back out of it, and so has teeth on every version.
+    """
+    import safetensors.numpy as stn
+    seen = {}
+    real = stn.save_file
+
+    def spy(tensors, path, *a, **kw):
+        seen.update({k: v.flags["C_CONTIGUOUS"] for k, v in tensors.items()})
+        return real(tensors, path, *a, **kw)
+
+    monkeypatch.setattr(stn, "save_file", spy)
+    prepare_mesh(tmp_path / "work", _obj(tmp_path), resolution=64)
+    assert seen, "nothing was saved"
+    bad = [k for k, ok in seen.items() if not ok]
+    assert not bad, f"non-contiguous tensors handed to safetensors: {bad}"
+
+
+def test_the_address_maps_survive_a_save_load_round_trip(tmp_path):
+    """The property the contiguity rule protects, stated directly.
+
+    This one only FAILS on safetensors >= 0.8; on 0.7 the library normalises
+    and it passes even with the bug present. Both tests are here on purpose:
+    this is the property, the one above is the guard that still works when the
+    installed version happens to forgive the mistake.
+    """
+    from safetensors.numpy import load_file
+    work = tmp_path / "work"
+    p = prepare_mesh(work, _obj(tmp_path), resolution=64)
+    q = load_file(str(work / "mesh" / f"{p.uid}.queries.safetensors"))
+    vm = q["valid_mask"].astype(bool)
+    sums = q["barycentric"].astype(np.float32).sum(0)[vm]
+    assert np.abs(sums - 1.0).max() < 2e-3, (
+        f"barycentrics read back summing to {sums.mean():.4f}, not 1")

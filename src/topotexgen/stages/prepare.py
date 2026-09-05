@@ -128,14 +128,21 @@ def prepare_mesh(work: Path, mesh_path: str | Path, *, resolution: int = 256,
             .save(d / f"{uid}.view_{i:03d}.png")
 
 
+    # every array is made contiguous first. safetensors documents that tensors
+    # must be contiguous and dense and does not check: from 0.8 it serialises
+    # the raw buffer, so `moveaxis(...).astype(...)` -- a VIEW with strides
+    # (2, 24, 6) -- is written in memory order and read back under the declared
+    # [3, H, W] shape. Barycentrics that sum to 1 come back summing to 0.61,
+    # with no error. safetensors 0.7 copied into C order and hid it.
     from safetensors.numpy import save_file
-    save_file({"face_id": am.face_id,
+    tensors = {"face_id": am.face_id,
                "barycentric": np.moveaxis(am.barycentric, -1, 0).astype(np.float16),
                "valid_mask": am.valid_mask,
                "uv_vertices": mesh.uv_vertices.astype(np.float32),
                "uv_faces": mesh.uv_faces.astype(np.int32),
                "vertices": mesh.vertices.astype(np.float32),
-               "faces": mesh.faces.astype(np.int32)},
+               "faces": mesh.faces.astype(np.int32)}
+    save_file({k: np.ascontiguousarray(v) for k, v in tensors.items()},
               str(d / f"{uid}.queries.safetensors"))
 
     p = Prepared(uid=uid, source=str(src), uv_source=uv_source,

@@ -183,13 +183,23 @@ decision, so make it explicitly and write down which way and why.
    `_frozen/atlas_ops.py` or `geometry/raster.py` requires a `RECIPE_VERSION`
    bump, which invalidates every product on disk. That is the mechanism, not an
    obstacle to route around.
-4. **Add the test that would have caught it.** And check it in both
+4. **A non-contiguous array handed to safetensors is silent corruption, not
+   an error.** The library documents that tensors must be contiguous and dense
+   and does not check; from 0.8 it serialises the raw buffer, so a transposed
+   view is written in memory order and read back under the declared shape.
+   Barycentrics that sum to 1 come back summing to 0.61. **safetensors 0.7
+   copied into C order and hid it**, so a green suite on 0.7 is not evidence —
+   which is exactly how this reached `0b11dc1`, and why the guard tests
+   inspect what is *handed* to the library rather than what comes back.
+   `np.ascontiguousarray` at every save site; there is no version pin, because
+   the fault was ours and ≥0.8 is behaving as documented.
+5. **Add the test that would have caught it.** And check it in both
    directions — a regression test that does not fail on the bug is worthless.
    The GLB flip bug in `0d59158` survived a suite that tests exactly that
    convention, because the round trip's two flips cancelled.
-5. **One writer per artefact.** Three processes once wrote one output
+6. **One writer per artefact.** Three processes once wrote one output
    concurrently and produced a plausible, worthless result.
-6. Do not touch anything outside this repository and your own run directory.
+7. Do not touch anything outside this repository and your own run directory.
 
 ## 6 · What to report back
 

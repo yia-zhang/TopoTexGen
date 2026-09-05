@@ -43,8 +43,25 @@ three as unproven.
 `src/topotexgen/workers/{caption,reference}_worker.py` exist and follow the
 contract. `generate_worker.py` does not. Everything you need:
 
-**Where the generator comes from.** A UniTEX-style checkout at
-`paths.generator_root`. Not vendored, not a hub model. The worker does:
+**Where the generator comes from.** It is **UniTEX** — the reference
+implementation of *"UniTEX: Universal High Fidelity Generative Texturing for 3D
+Shapes"* ([arXiv 2505.23253](https://arxiv.org/abs/2505.23253)), **Apache-2.0**.
+Clone it yourself; it is not vendored here and not a pip package, which is why
+the config points at a path rather than naming it.
+
+Two leads on the URL, and neither is confirmed — check before you trust one.
+The upstream README cites `github.com/lightillusions/UniTEX-FLUX` as its
+companion training repo, so `lightillusions` is the publishing org; a note in
+another tree cites `github.com/YixunLiang/UniTEX`. The upstream README's own
+badges carry only the arXiv link. **The check that settles it: the right repo
+is the one whose `pipeline.py` defines `CustomRGBTextureFullPipeline`.**
+
+Its own weights are on the Hub like everything else —
+`hf download lyxun/UniTEX` (the pipeline pulls `mv_lora_weights.safetensors`
+and `delight_lora_weights.safetensors` from it) — so the checkout is code only.
+
+Clone it **outside this repository**, anywhere, and set `paths.generator_root`.
+The worker does:
 
 ```python
 sys.path.insert(0, str(generator_root))
@@ -111,6 +128,22 @@ read `g8_psnr` against `g8_psnr_flip`: if the flipped variant wins, your write
 is mirrored. **Then record which way you had to write it, in the worker's
 docstring, with the numbers.** G8 exists so this is a measurement rather than
 an argument.
+
+### (a2) The prerequisites, all self-service
+
+Nothing is shipped here and nothing needs to be sent to you:
+
+```bash
+export HF_HOME=/big/disk/topotexgen/hf      # ~50 GiB, outside every repo
+hf auth login                               # FLUX.1-dev and RMBG-2.0 are gated
+
+hf download Qwen/Qwen2.5-VL-7B-Instruct     # 15.5 GiB
+hf download black-forest-labs/FLUX.1-dev    # 31.7 GiB, accept the terms first
+hf download briaai/RMBG-2.0 --include "model.safetensors" "*.json"   # 0.9 GiB
+hf download lyxun/UniTEX                    # the generator's own LoRA weights
+
+git clone <the UniTEX repo>  /somewhere/outside/this/tree
+```
 
 ### (b) Run the model stages, for the first time
 

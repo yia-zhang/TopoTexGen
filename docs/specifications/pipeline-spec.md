@@ -47,6 +47,44 @@ violating it silently reverted 74 curated prompts:
 2. otherwise the newest worker shard;
 3. otherwise the existing caption.
 
+#### How often it is right, and where it is wrong
+
+Measured on 23 objects with independent category labels, captioned from the
+untextured three-quarter views this pipeline renders:
+
+| | |
+|---|---|
+| correct or synonymous | **9 / 23 (39%)** |
+| right domain, wrong specific | 5 / 23 |
+| clearly wrong | **9 / 23 (39%)** |
+
+The failures are not uniformly distributed, and that is the useful part: they
+are concentrated in **thin, flat and degenerate geometry** — a booklet, a
+dartboard, a sheet of tissue, a crisp, a folded garment. Stripped of colour,
+those have no silhouette anyone could read, so this is a limit of asking about
+shape rather than a tuning problem. More views will not move it.
+
+The view angle *did* move it, and by a lot: rendering the object down its axes
+instead of from three-quarter angles scored **0 of 5** on the same objects and
+the same prompt. That was a defect in this package, fixed; see
+`geometry.view.SHAPE_VIEW_ANGLES`.
+
+**No gate checks any of this.** G1, G6, G7 and G8 all test *consistency*, and a
+wrong caption is consistent all the way down: the reference model renders the
+wrong object beautifully, the generator paints it faithfully, and every
+derived artefact agrees. A caption naming the wrong object is the one defect
+this pipeline cannot catch by itself, so `captions.jsonl` is written where a
+human can read it, and a deliberate rewrite always wins the merge.
+
+> **Two dataset objects can share one mesh.** The released dataset contains
+> objects with identical geometry and identical UV layout carrying different
+> textures — legitimate, since its deduplication is on the source file's hash
+> and two source files may share geometry. `prepare` addresses an object by the
+> **content** of its mesh, so it collapses them into one. That is right for a
+> mesh-driven run (the same mesh is the same texturing job) and does not affect
+> a dataset-driven one, which carries the dataset's own uid. Worth knowing
+> before counting objects: 25 files can yield 23 uids.
+
 ### reference
 
 Prompt → reference image, in batches. Separated from `generate` so the

@@ -10,19 +10,28 @@ Read this first, then [README](README.md),
 
 ---
 
-## 1 · What this repo is, in one paragraph
+## 1 · What this repo is
 
-A closed loop: give it a mesh, get a texture. `prepare` takes an `.obj`/`.glb`,
-gives it an identity and a UV layout, and writes the address maps that say
-which face owns which texel. Three model stages caption the object, make a
-reference image, and paint an atlas. `assetize` turns the atlas into the
-delivered texture. `measure` and `gate` decide whether the result is usable.
-Every product is keyed to the inputs that determined it, so a stale product is
-a cache miss rather than a wrong answer.
+**A texture for a mesh that has none.** One command:
+
+```bash
+topotexgen texture chair.obj -o chair.png
+```
+
+It unwraps the mesh if it has no UVs, works out what the object is, generates a
+texture, delivers it, measures the result and gives a verdict.
+
+That is the product. It is worth saying plainly because the repository does not
+look like it: underneath there is a work queue, content keys, per-object leases
+and seven gates, all of which exist because this is a rebuild of a pipeline
+that textured 12,807 objects and each mechanism is a scar from that scale. They
+are **implementation detail now, not the interface**. Do not put them back in
+front of a user, and do not add more of them: if something can be simpler for
+the single-mesh case without losing a check, make it simpler.
 
 ## 2 · State: what is proven, and how
 
-Baseline: **`0d59158`** on `main`. **149 tests, ruff clean, no GPU needed.**
+Baseline: **`1f61be5`** on `main`. **158 tests, ruff clean, no GPU needed.**
 
 | | how it was verified |
 |---|---|
@@ -153,32 +162,42 @@ hf download black-forest-labs/FLUX.1-dev \
 git clone <the UniTEX repo>  /somewhere/outside/this/tree
 ```
 
-### (b) Run the model stages, for the first time
+### (b) The first real run
 
 ```bash
-topotexgen --config run.yaml prepare --mesh your.obj
-topotexgen --config run.yaml caption
-topotexgen --config run.yaml reference
-topotexgen --config run.yaml generate
-topotexgen --config run.yaml assetize
-topotexgen --config run.yaml measure
-topotexgen --config run.yaml gate
-topotexgen --config run.yaml status
+topotexgen texture some_mesh.obj -o out.png
 ```
 
-Start with **one** mesh and **one** worker per stage. The interesting failures
-are all in the first object.
+One mesh, one worker per stage. The interesting failures are all in the first
+object, and the stage that stops the run names itself.
 
-### (c) G3, G4 and G5 — decide, do not implement by default
+If you would rather drive it stage by stage while debugging, the batch
+interface is still there (`prepare`, `caption`, `reference`, `generate`,
+`assetize`, `measure`, `gate`, `status`) and does exactly the same work.
 
-They are still reported as unmeasurable. Before writing anything, decide
-whether they belong in a mesh→texture loop at all: G3 compares against
-*condition views* and G5 asks whether a *frozen-protocol re-render* accepted
-enough views. Both are **admission rules for one particular dataset**, not
-judgements about a texture. G4 compares framing against *the object's own
-original views*, which a fresh mesh does not have. My reading is that all three
-are out of scope here and the honest thing is to keep saying so — but it is a
-decision, so make it explicitly and write down which way and why.
+**Before the generator exists, the deterministic half still runs.** Put an
+atlas where the generator would have left one and record it the way a worker
+must:
+
+```
+<work>/atlas/<uid>/atlas.png   and   valid.png   (and mv_rgb.png, for G8)
+WorkQueue(<work>/queue/generate, "you").complete(uid, run.key_of(uid))
+```
+
+then `assetize`, `measure`, `gate` run as normal. That path is how everything
+in section 2 was verified without a GPU.
+
+### (c) G3, G4 and G5 — settled: out of scope
+
+They stay reported as unmeasurable, and that is a decision rather than a gap.
+G3 compares against *condition views* and G5 asks whether a *frozen-protocol
+re-render* accepted enough of them: both are admission rules for one particular
+dataset, not judgements about a texture. G4 compares framing against *the
+object's own original views*, which a fresh mesh does not have.
+
+Implementing them here would mean carrying a renderer and a dataset's
+acceptance policy into a tool whose job is to texture a mesh. If you disagree,
+say so with a reason — but do not implement them by default.
 
 ## 4 · Traps, all measured rather than guessed
 

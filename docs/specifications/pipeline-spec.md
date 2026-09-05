@@ -178,3 +178,19 @@ This is not hygiene, it is the fix for a specific class of bug: a product
 cached by existence survives a change of caption, seed or recipe and then
 silently contradicts the inputs it claims to come from. `topotexgen status`
 reports such products as `superseded_by_recipe` rather than as done.
+
+## Why a stage refuses work you think is ready
+
+Three deliberate refusals. Each was a real bug at campaign scale, and each
+would otherwise present as a texture that is simply wrong:
+
+* **`atlas_not_current`** — the `generate` queue has not completed this object
+  at the current key. An atlas sits at a path that carries no key, so its
+  existence says nothing about which caption produced it. Re-caption without
+  re-generating and the delivery is refused rather than re-labelled.
+* **`unchanged_atlas`** — the atlas file is newer than the delivered product,
+  but its bytes are identical: a copy, a restore, a `touch`. Nothing is redone.
+  The timestamp is the cheap detector and the digest is the decider.
+* **`superseded_by_recipe`** in `status` — a product exists but is bound to
+  different inputs. Editing `margin_px` reopens delivery and leaves generation
+  alone; editing `atlas_resolution` reopens both.

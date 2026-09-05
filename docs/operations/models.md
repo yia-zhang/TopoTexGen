@@ -9,12 +9,17 @@ this before planning a run.
 | stage | model | one-time download | licence | gated? |
 |---|---|---|---|---|
 | `caption` | `Qwen/Qwen2.5-VL-7B-Instruct` | **15.5 GiB** | Apache-2.0 | no |
-| `reference` | `black-forest-labs/FLUX.1-dev` | **31.7 GiB** | FLUX.1 \[dev\] Non-Commercial | **yes** — accept the terms on the model page |
+| `reference` | `black-forest-labs/FLUX.1-dev` | **31.4 GiB** of a repo that is **54+ GiB** unfiltered | FLUX.1 \[dev\] Non-Commercial | **yes** — accept the terms on the model page |
 | `generate` (matting) | `briaai/RMBG-2.0` | **0.9 GiB** of a 5.0 GiB repo | `bria-rmbg-2.0`, linked to CC BY-NC 4.0 | **yes** — the card's own form says "for non commercial use" |
 | `generate` (texture) | a **UniTEX-style checkout**, not a hub model | see below | its own | — |
 
-**≈ 48 GiB of weights**, plus the generator checkout. Sizes are measured, not
-estimated: they are the byte totals of the snapshot each stage actually loads.
+Plus **`lyxun/UniTEX`, 1.85 GiB** — the generator's own LoRA and LTM weights.
+**≈ 50 GiB in total** if you filter, appreciably more if you do not.
+
+Sizes are the byte totals of the snapshot each stage actually **loads**, which
+is not the same as what an unfiltered `hf download` transfers. Two of the four
+repos publish more than one packaging of the same network, so the filtered
+commands below are the ones to use.
 
 > **`du -sh` on the cache will tell you 3–8× more than this.** On this project's
 > filesystem (JuiceFS) a directory's `st_size` mirrors its recursive content and
@@ -24,24 +29,33 @@ estimated: they are the byte totals of the snapshot each stage actually loads.
 
 ### The breakdown, so you can tell a bad download from a slow one
 
-**FLUX.1-dev**, 31.7 GiB, and effectively all of it is needed for a bf16 load:
+**FLUX.1-dev** publishes both a diffusers layout and a single-file checkpoint.
+`FluxPipeline.from_pretrained` uses the first and ignores the second, so an
+unfiltered `hf download` transfers over 54 GiB to load 31.4:
 
 ```
-transformer/    3 shards      22.2 GiB
-text_encoder_2/ 2 shards (T5)  8.9 GiB
-text_encoder/   CLIP           235 MiB
-vae/                           160 MiB
-ae.safetensors  (standalone VAE, unused by diffusers)   320 MiB
-tokenizers                     ~5 MiB
+transformer/     3 shards      22.2 GiB   <- loaded
+text_encoder_2/  2 shards (T5)  8.9 GiB   <- loaded
+text_encoder/    CLIP           235 MiB   <- loaded
+vae/                            160 MiB   <- loaded
+tokenizers, scheduler, model_index.json    ~5 MiB   <- loaded
+                                = 31.4 GiB
+ae.safetensors            (standalone VAE)  320 MiB  <- not used by diffusers
+flux1-dev.safetensors  (single-file ckpt)   ~24 GiB  <- not used by diffusers
 ```
 
 **RMBG-2.0** publishes the same network in ten formats; the repo is 5.0 GiB and
-you need **one** of them. Fetch a single variant:
+you need **one** of them.
+
+> **One pattern per `--include`.** The CLI moved to typer in
+> `huggingface_hub` 1.x, so `--include "a" "b"` treats `b` as a positional
+> argument and the download fails with `%2A.json` in the URL. Repeating the
+> flag works on both 0.x (where `--include` was `nargs="*"`) and 1.x.
 
 ```bash
-hf download briaai/RMBG-2.0 --include "model.safetensors" "*.json"   # 0.9 GiB
-# or, if your matting path is onnxruntime:
-hf download briaai/RMBG-2.0 --include "onnx/model.onnx" "*.json"     # 1.0 GiB
+hf download briaai/RMBG-2.0 --include "model.safetensors" --include "*.json"
+# 0.82 GiB measured. If your matting path is onnxruntime:
+hf download briaai/RMBG-2.0 --include "onnx/model.onnx" --include "*.json"
 ```
 
 ## Licence: two are gated, and one reaches the textures
@@ -73,9 +87,17 @@ Neither this repository nor its authors grant you any right to these models.
 pip install -U "huggingface_hub[cli]"
 hf auth login                        # required: two of the three are gated
 
-hf download Qwen/Qwen2.5-VL-7B-Instruct
-hf download black-forest-labs/FLUX.1-dev          # after accepting the terms
-hf download briaai/RMBG-2.0 --include "model.safetensors" "*.json"
+hf download Qwen/Qwen2.5-VL-7B-Instruct                   # 15.46 GiB measured
+hf download lyxun/UniTEX                                 # 1.85 GiB, the generator's
+
+# FLUX: filtered to what diffusers loads. Unfiltered this is 54+ GiB.
+hf download black-forest-labs/FLUX.1-dev \
+  --include "model_index.json" --include "scheduler/*" \
+  --include "tokenizer/*" --include "tokenizer_2/*" \
+  --include "text_encoder/*" --include "text_encoder_2/*" \
+  --include "transformer/*" --include "vae/*"            # 31.4 GiB
+
+hf download briaai/RMBG-2.0 --include "model.safetensors" --include "*.json"
 ```
 
 They land in `$HF_HOME/hub` (default `~/.cache/huggingface/hub`). Point

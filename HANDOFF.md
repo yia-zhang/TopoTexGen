@@ -137,10 +137,18 @@ Nothing is shipped here and nothing needs to be sent to you:
 export HF_HOME=/big/disk/topotexgen/hf      # ~50 GiB, outside every repo
 hf auth login                               # FLUX.1-dev and RMBG-2.0 are gated
 
-hf download Qwen/Qwen2.5-VL-7B-Instruct     # 15.5 GiB
-hf download black-forest-labs/FLUX.1-dev    # 31.7 GiB, accept the terms first
-hf download briaai/RMBG-2.0 --include "model.safetensors" "*.json"   # 0.9 GiB
-hf download lyxun/UniTEX                    # the generator's own LoRA weights
+hf download Qwen/Qwen2.5-VL-7B-Instruct     # 15.46 GiB
+hf download lyxun/UniTEX                    # 1.85 GiB, the generator's own weights
+hf download briaai/RMBG-2.0 --include "model.safetensors" --include "*.json"
+
+# FLUX: filter, or an unfiltered pull transfers 54+ GiB to load 31.4.
+# One pattern PER --include: hf 1.x is typer-based and treats extra values as
+# positional arguments. See docs/operations/models.md.
+hf download black-forest-labs/FLUX.1-dev \
+  --include "model_index.json" --include "scheduler/*" \
+  --include "tokenizer/*" --include "tokenizer_2/*" \
+  --include "text_encoder/*" --include "text_encoder_2/*" \
+  --include "transformer/*" --include "vae/*"
 
 git clone <the UniTEX repo>  /somewhere/outside/this/tree
 ```

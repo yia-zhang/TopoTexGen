@@ -3,15 +3,38 @@
 ## Why the stages cannot share one interpreter
 
 The captioner, the reference model and the texture generator pull incompatible
-pins — different torch builds, different diffusers, different CUDA
-expectations. Installing them together yields an environment where at least one
-of them is subtly wrong, and "subtly wrong" in a generative stage means
-plausible output that is not what the recipe says.
+pins. This is measured, not anticipated: the generator's own
+`requirements.txt` pins `transformers==4.52.4`, `diffusers==0.32.2` and
+`trimesh==3.20.2`, while a working reference-stage environment runs
+`diffusers 0.40` with `transformers 5.16`. There is no single resolution.
+
+Installing them together yields an environment where at least one of them is
+subtly wrong, and "subtly wrong" in a generative stage means plausible output
+that is not what the recipe says.
 
 So each model stage runs in its own environment, and the orchestrator spawns
 it. `interpreters.<stage>` in the run config is the python that has that
-stage's dependencies; the package refuses to guess. `assetize`, `gate` and
-`status` need none of them and run anywhere.
+stage's dependencies; the package refuses to guess. `prepare`, `assetize`,
+`measure`, `gate` and `status` need none of them and run anywhere.
+
+## The generator cannot be imported without a GPU
+
+Not a style preference — a measured constraint, and the reason every worker
+imports its model *inside* a function rather than at module scope.
+
+The upstream builds a CUDA tensor while being imported. It is not in
+`pipeline.py` itself, which is why looking there does not find it: the chain is
+`pipeline.py` → `TextureTools/texturetools/render/nvdiffrast/renderer_inverse.py`
+→ `TextureTools/texturetools/mesh/structure_v2.py:19`, where the body of
+`class PBRDefault` evaluates `albedo: torch.Tensor = to_tensor_f([0, 0, 0])` at
+class-definition time and lands on the CUDA device. With the GPU hidden,
+`import pipeline` raises `RuntimeError: No CUDA GPUs are available`; with one
+visible it imports.
+
+A module-scope import in a worker would therefore make this package need a GPU
+to be *importable*, and its own 151-test suite unrunnable on any host without
+one. `tests/unit/test_worker_contract.py` fails if a heavy import moves to
+module scope.
 
 ## The worker contract
 

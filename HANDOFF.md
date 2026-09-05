@@ -170,6 +170,26 @@ decision, so make it explicitly and write down which way and why.
   fails until you accept their terms. See
   [models and weights](docs/operations/models.md).
 
+## 4b · Setting the machine up
+
+Packages and weights are yours to install — nothing here ships either. Two
+rules about where they go:
+
+```bash
+export HF_HOME=/big/disk/topotexgen/hf     # ~50 GiB, OUTSIDE this repo
+hf auth login                              # two of the three models are gated
+```
+
+**Weights do not go inside this repository** — not in `models/`, not anywhere
+under the working tree. The licences of two of them do not permit
+redistribution, and a public repo with a weights directory is one `git add`
+away from doing exactly that. The recipe names models rather than pointing at
+paths, and the cache resolves the names; keep it that way. The reasoning is in
+[models and weights](docs/operations/models.md#do-not-put-weights-inside-this-repository).
+
+The exception is the **generator checkout**, which is not a hub model and does
+need a path: `paths.generator_root`.
+
 ## 5 · Rules
 
 1. **Do not weaken a gate to make a run pass.** A missing measurement is a

@@ -83,6 +83,36 @@ They land in `$HF_HOME/hub` (default `~/.cache/huggingface/hub`). Point
 environment** — the model stages are separate processes and do not inherit a
 shell variable you exported after they started.
 
+```bash
+export HF_HOME=/big/disk/topotexgen/hf     # anywhere with ~50 GiB, OUTSIDE this repo
+```
+
+### Do not put weights inside this repository
+
+Not in `models/`, not anywhere under the working tree. Three reasons, in order
+of how much they cost:
+
+* **Licence.** Two of the three are gated and non-commercial. A weights
+  directory inside a public repo is one `git add` away from redistributing
+  them, which their licences do not permit. This repository's sibling has
+  already had data staged by an over-eager `git add -A` once.
+* **It fights the cache's design.** All three load through `from_pretrained`,
+  which wants the Hugging Face cache: content-addressed, deduplicated across
+  projects, resumable, verifiable, and recording the exact revision in the
+  snapshot's own directory name. A loose `models/` folder either duplicates
+  all of that or gives up resume and verification.
+* **It does not improve reproducibility.** A folder cannot say which revision
+  it is; the cache's snapshot name is the commit hash.
+
+**The repository does not need a model path.** The recipe names the models
+(`caption_model`, `reference_model`) and the workers hand those names to
+`from_pretrained`; the cache resolves them. Keep it that way — a path in the
+recipe would make a run depend on one machine's layout, which is the failure
+this project's configuration was built to remove.
+
+The one thing that genuinely needs a path is the **generator checkout**, which
+is not a hub model. That is `paths.generator_root`, and it can live anywhere.
+
 To run with no network at all once the weights are local:
 
 ```bash

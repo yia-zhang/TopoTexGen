@@ -17,6 +17,38 @@ it. `interpreters.<stage>` in the run config is the python that has that
 stage's dependencies; the package refuses to guess. `prepare`, `assetize`,
 `measure`, `gate` and `status` need none of them and run anywhere.
 
+## Building the generator's environment
+
+Measured by installing it, not read off a requirements file. `import pipeline`
+does not succeed until all of these are present, and each was found by the
+import failing on the next one:
+
+| needed | what pulls it in |
+|---|---|
+| `open3d` | `pipeline.py` -> `uv_atlas.py` |
+| `gpytoolbox` | `pipeline.py` -> `structure.py` |
+| `cupy-cuda13x` | `pipeline.py` -> `renderer_inverse.py` -> `pcd/knn` |
+| `nvdiffrast` | must be installed with `--no-build-isolation` |
+| `jaxtyping`, `typeguard`, `pygltflib`, `timeout_decorator`, `lpips`, `peft`, `pyexr`, `vedo` | scattered through the generator's own tree |
+
+Two traps that cost time:
+
+* **Pin `huggingface_hub<1.0`, and pin it again after `open3d`.** The
+  generator's `transformers==4.52.4` requires `huggingface-hub>=0.30,<1.0`, and
+  installing `open3d` pushes it back up to 1.x.
+* **Do not install `kernels`.** It looks like the fix for a `bitsandbytes`
+  warning and it is not: `huggingface_hub` 0.36.2 validates dataclasses
+  strictly and rejects `kernels`' `import_name: str | None` annotation, so
+  `from diffusers import FluxPipeline` fails outright. The warning itself is
+  harmless. Uninstalling restores it.
+
+`xformers` is **not** needed to import the pipeline. The generator pins
+`0.0.28` against a CUDA 11.8 index, which cannot match a modern torch build;
+deal with it only if an inference path turns out to want it.
+
+If a package mirror 403s on a pinned wheel (`trimesh-3.20.2` did), install that
+one from `https://pypi.org/simple/` directly.
+
 ## The generator cannot be imported without a GPU
 
 Not a style preference — a measured constraint, and the reason every worker

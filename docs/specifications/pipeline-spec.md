@@ -58,6 +58,11 @@ untextured three-quarter views this pipeline renders:
 | right domain, wrong specific | 5 / 23 |
 | clearly wrong | **9 / 23 (39%)** |
 
+Judged by eye against the source dataset's own category labels, counting a
+synonym as correct — `Hoodie` for *sweatshirt*, `Pipe` for *tobacco_pipe*,
+`Monster truck` for *pickup_truck*. Those labels are themselves coarse, so read
+this as the order of magnitude rather than a benchmark.
+
 The failures are not uniformly distributed, and that is the useful part: they
 are concentrated in **thin, flat and degenerate geometry** — a booklet, a
 dartboard, a sheet of tissue, a crisp, a folded garment. Stripped of colour,
@@ -83,7 +88,7 @@ human can read it, and a deliberate rewrite always wins the merge.
 > **content** of its mesh, so it collapses them into one. That is right for a
 > mesh-driven run (the same mesh is the same texturing job) and does not affect
 > a dataset-driven one, which carries the dataset's own uid. Worth knowing
-> before counting objects: 25 files can yield 23 uids.
+> before counting objects: 24 mesh files can yield 23 uids.
 
 ### reference
 
@@ -134,7 +139,11 @@ rasteriser, and neither is part of this package. Supply the renderer's numbers
 as `staging/<uid>/render.json` and they are folded into the row.
 
 The verdict layer fails an unmeasured gate rather than passing it, so a run
-without a renderer reports `FAIL:G8_MISSING` — not a clean bill of health.
+without a renderer cannot report a pass. Which failure it reports depends on
+the object: the gates are evaluated in order and the first one to fail is the
+verdict, so a dark texture reports `FAIL:G1_DARK_NO_GAIN` and never reaches the
+missing-measurement check. `FAIL:G8_MISSING` is what a run without a renderer
+reports **once the earlier gates pass**.
 
 ### commit — NOT IMPLEMENTED HERE
 

@@ -106,8 +106,13 @@ reproject_and_query_field(save_dir, input_mesh_path, input_mv_image_path,
                           flatten=False, method="reproject", inpainting=True)
 ```
 
-**The per-object seed** the campaign used:
-`63 + int(sha256(uid)[8:16], 16) % 2**31 + attempt * 1000`.
+**The per-object seed is `ids.seed(uid, "generate", attempt)`** — this
+package's own convention, and what the pipeline specification says.
+
+The campaign used `63 + int(sha256(uid)[8:16], 16) % 2**31 + attempt * 1000`.
+Do NOT use it. Its only advantage was byte-comparability with the 12,807
+textures it shipped, and reproducing those is not what this tool is for. Two
+formulas for one thing is how the next person loses an afternoon.
 
 **One documented fallback.** If the field decode raises a `TypeError`
 containing `"NoneType"`, the object has **zero invisible texels** so the

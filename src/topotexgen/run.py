@@ -4,14 +4,24 @@ One directory holds everything a run produces, so a run can be inspected,
 resumed or thrown away as a unit:
 
     <work>/
-      population.json        the frozen work set and how it was chosen
-      captions.jsonl         one prompt per object (merged, curated edits kept)
-      refs/<uid>.png         reference images, keyed by recipe
-      atlas/<uid>/           generated atlases, keyed by recipe
-      staging/<uid>/         delivered textures and re-rendered views
-      queue/<stage>/         claims and completion markers per stage
-      logs/                  one log per worker per stage
-      gates/verdicts.jsonl   one row per object per gate pass
+      population.json          the frozen work set, and the recipe it was chosen with
+      mesh/<uid>.obj           the mesh as the generator reads it (v flipped)
+      mesh/<uid>.queries.*     its address maps: face_id, barycentric, valid_mask
+      mesh/<uid>.view_*.png    untextured shape views, for the captioner
+      mesh/<uid>.json          what was measured about the mesh, and what was unwrapped
+      captions.jsonl           one prompt per object (merged, curated edits kept)
+      refs/<uid>.png           reference images, keyed by the generation key
+      atlas/<uid>/             generated atlas + the generator's own view sheet
+      staging/<uid>/           delivered texture, its mask, and the delivery record
+      queue/<stage>/           claims and completion markers per stage
+      logs/                    one log per worker per stage
+      gates/measurements.jsonl one row per object: what was measured, and what was not
+      gates/verdicts.jsonl     one row per object per gate pass
+
+Nothing outside <work> is written, and every product is bound to the key of the
+inputs that determined it -- so a stale product is a cache miss rather than a
+wrong answer, and the whole directory can be inspected, resumed or thrown away
+as a unit.
 """
 from __future__ import annotations
 
